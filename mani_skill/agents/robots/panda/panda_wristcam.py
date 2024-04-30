@@ -10,10 +10,10 @@ from .panda import Panda
 
 
 @register_agent()
-class PandaRealSensed435(Panda):
+class PandaWristCam(Panda):
     """Panda arm robot with the real sense camera attached to gripper"""
 
-    uid = "panda_realsensed435"
+    uid = "panda_wristcam"
     urdf_path = f"{PACKAGE_ASSET_DIR}/robots/panda/panda_v3.urdf"
 
     @property
