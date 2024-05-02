@@ -51,8 +51,10 @@ def main(args):
     else:
         for _ in range(50):
             env.reset()
-            env._render_images.append(env.capture_image())
-        env.flush_video(name=f"{args.env_id}_reset_distribution")
+            env.render_images.append(env.capture_image())
+        name = f"{args.env_id}_reset_distribution"
+        env.flush_video(name=name)
+        print(f"Saved video to {env.output_dir}/{name}.mp4")
     env.close()
 
 if __name__ == "__main__":
