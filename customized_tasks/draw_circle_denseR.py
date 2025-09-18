@@ -184,25 +184,30 @@ class DrawCircleEnv(BaseEnv):
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
     def compute_dense_reward(self, obs=None, action=None, info=None):
+        """
+        Simplified dense reward:
+        Reward based on how close the brush is to the target circle radius,
+        only when brush is near the canvas plane.
+        """
         reward = torch.zeros(self.num_envs, device=self.device)
-        if self.draw_step > 0:
-            current_dot = self.dots[self.draw_step-1].pose.p.reshape(self.num_envs,1,3)
-            z_mask = current_dot[:,:,2] < 0
-            dist = torch.sqrt(torch.sum((current_dot[:,:,None,:2] - self.triangles[:,None,:,:])**2, dim=-1))
-            new_covered = torch.zeros(self.num_envs, device=self.device)
-            for env_idx in range(self.num_envs):
-                new_points = torch.logical_and(dist[env_idx] < self.THRESHOLD, ~self.ref_dist[env_idx])
-                new_covered[env_idx] = new_points.float().sum()
-            self.ref_dist = torch.logical_or(self.ref_dist, (dist < self.THRESHOLD).any(dim=1))
-            reward += new_covered / self.triangles.shape[1]
-            # z-plane penalty
-            brush_z = self.agent.tcp.pose.p[:,2]
-            distance_penalty = (brush_z - self.CANVAS_THICKNESS).clamp(min=0)
-            reward -= 0.5 * distance_penalty
-            # completion bonus
-            coverage = self.ref_dist.float().sum(dim=1) / self.NUM_POINTS
-            reward[coverage >= 0.95] += 5.0
+
+        # current brush position
+        brush_pos = self.agent.tcp.pose.p  # [num_envs, 3]
+        brush_xy = brush_pos[:, :2]        # only xy-plane
+        brush_z = brush_pos[:, 2]
+
+        # check if brush is near the canvas plane
+        z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.01  # 1cm threshold
+
+        # distance to circle center (assume center at origin)
+        dist_to_center = torch.linalg.norm(brush_xy, dim=1)
+
+        # reward only for brushes close to the canvas
+        radius_error = torch.abs(dist_to_center - self.RADIUS)
+        reward[z_mask] += torch.exp(-50 * radius_error[z_mask])
+
         return reward
+
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8
