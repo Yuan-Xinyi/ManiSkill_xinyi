@@ -206,7 +206,7 @@ class DrawCircleEnv(BaseEnv):
         # -------- (1) 半径误差奖励（只对新点有效） --------
         dist_to_center = torch.linalg.norm(brush_xy, dim=1)
         radius_error = torch.abs(dist_to_center - self.RADIUS)
-        base_radius_reward = torch.exp(-100 * radius_error)
+        base_radius_reward = torch.exp(-200 * radius_error)
 
         # -------- (2) 覆盖检测 --------
         dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)  # [num_envs, 1, NUM_POINTS]
@@ -216,7 +216,7 @@ class DrawCircleEnv(BaseEnv):
 
         # 半径奖励只给新覆盖点
         radius_reward = base_radius_reward * new_cover.any(dim=1).float()
-        reward += radius_reward * 0.5 * z_mask.float()
+        reward += radius_reward * 2.0 * z_mask.float()
 
         # -------- (3) 覆盖奖励 --------
         cover_reward = new_cover.float().sum(dim=1) * 0.3
