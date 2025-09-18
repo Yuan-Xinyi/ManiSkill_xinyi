@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 from collections import defaultdict
 import os
 import random
@@ -20,6 +23,17 @@ from mani_skill.utils import gym_utils
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
+
+import sys
+import os
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# ---------------customized tasks----------------
+from customized_tasks import draw_circle_denseR
+# from customized_tasks import draw_triangle_denseR
 
 @dataclass
 class Args:

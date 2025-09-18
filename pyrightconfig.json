@@ -1,6 +1,10 @@
 {
+    "typeCheckingMode": "off",
     "exclude": [
         "**/__pycache__",
-        "mani_skill/assets",
+        "mani_skill/assets"
     ],
+    "reportOperatorIssue": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportPossiblyUnboundVariable": "none"
 }

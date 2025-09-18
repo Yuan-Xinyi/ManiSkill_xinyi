@@ -1,1 +1,0 @@
-from .pick_cube import solve as solvePickCube
