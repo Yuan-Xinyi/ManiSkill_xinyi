@@ -69,15 +69,15 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 512
     """the number of parallel environments"""
-    num_eval_envs: int = 8
+    num_eval_envs: int = 4
     """the number of parallel evaluation environments"""
     partial_reset: bool = True
     """whether to let parallel environments reset upon termination instead of truncation"""
     eval_partial_reset: bool = False
     """whether to let parallel evaluation environments reset upon termination instead of truncation"""
-    num_steps: int = 50
+    num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
-    num_eval_steps: int = 50
+    num_eval_steps: int = 500
     """the number of steps to run in each evaluation environment during evaluation"""
     reconfiguration_freq: Optional[int] = None
     """how often to reconfigure the environment during training"""
@@ -341,6 +341,11 @@ if __name__ == "__main__":
                 done_mask = infos["_final_info"]
                 for k, v in final_info["episode"].items():
                     logger.add_scalar(f"train/{k}", v[done_mask].float().mean(), global_step)
+                
+                # --- 新增打印平均 episode reward ---
+                avg_ep_reward = final_info["episode"]["reward"][done_mask].float().mean().item()
+                print(f"Iteration {iteration}, step {step}, avg_episode_reward = {avg_ep_reward:.4f}")
+
                 with torch.no_grad():
                     final_values[step, torch.arange(args.num_envs, device=device)[done_mask]] = agent.get_value(infos["final_observation"][done_mask]).view(-1)
         rollout_time = time.time() - rollout_time
