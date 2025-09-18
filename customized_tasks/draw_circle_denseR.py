@@ -185,29 +185,45 @@ class DrawCircleEnv(BaseEnv):
 
     def compute_dense_reward(self, obs=None, action=None, info=None):
         """
-        Simplified dense reward:
-        Reward based on how close the brush is to the target circle radius,
-        only when brush is near the canvas plane.
+        Dense reward combining:
+        1. 半径奖励：鼓励笔尖在正确的半径附近
+        2. 覆盖奖励：鼓励覆盖更多圆上的点
+        3. 平滑惩罚（可选）：避免大幅度乱动
         """
         reward = torch.zeros(self.num_envs, device=self.device)
 
-        # current brush position
+        # 当前笔尖位置
         brush_pos = self.agent.tcp.pose.p  # [num_envs, 3]
-        brush_xy = brush_pos[:, :2]        # only xy-plane
+        brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
 
-        # check if brush is near the canvas plane
-        z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.01  # 1cm threshold
+        # (1) Z 约束：画笔必须接近画布
+        z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02  # 放宽到2cm
 
-        # distance to circle center (assume center at origin)
+        # (2) 半径误差奖励
         dist_to_center = torch.linalg.norm(brush_xy, dim=1)
-
-        # reward only for brushes close to the canvas
         radius_error = torch.abs(dist_to_center - self.RADIUS)
-        reward[z_mask] += torch.exp(-50 * radius_error[z_mask])
+        radius_reward = torch.exp(-50 * radius_error)  # 在正确半径附近奖励高
+        reward[z_mask] += radius_reward[z_mask]
+
+        # (3) 覆盖奖励：每次接近一个新的圆点就加分
+        # 找到当前点距离所有目标圆点的距离
+        dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)  # [num_envs, 1, NUM_POINTS]
+        near_goal = dist.squeeze(1) < self.THRESHOLD
+
+        # 判断哪些新点被覆盖
+        new_cover = torch.logical_and(near_goal, ~self.ref_dist)
+        cover_reward = new_cover.float().sum(dim=1) * 0.2  # 每覆盖一个新点加 0.2 分
+        reward += cover_reward
+
+        # 更新 ref_dist（环境中的覆盖情况）
+        self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
+
+        # (4) 可选：动作惩罚（防止乱抖）
+        if action is not None:
+            reward -= 0.01 * torch.norm(action, dim=1)
 
         return reward
-
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8
