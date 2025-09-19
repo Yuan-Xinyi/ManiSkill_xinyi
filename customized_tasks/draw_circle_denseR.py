@@ -185,7 +185,7 @@ class DrawCircleEnv(BaseEnv):
 
     def compute_dense_reward(self, obs=None, action=None, info=None):
         """
-        Dense reward:
+        Normalized Dense reward:
         - 高斯环形半径奖励：鼓励笔尖停留在半径 R 的环上
         - 覆盖奖励：新覆盖点加分
         - 进度奖励：覆盖率越高奖励越大
