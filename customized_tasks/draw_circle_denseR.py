@@ -174,25 +174,55 @@ class DrawCircleEnv(BaseEnv):
 
     def success_check(self):
         if self.draw_step > 0:
-            current_dot = self.dots[self.draw_step-1].pose.p.reshape(self.num_envs,1,3)
-            z_mask = current_dot[:,:,2] < 0
-            dist = torch.sqrt(torch.sum((current_dot[:,:,None,:2] - self.triangles[:,None,:,:])**2, dim=-1)) < self.THRESHOLD
-            self.ref_dist = torch.logical_or(self.ref_dist, (1 - z_mask.int()) * dist.reshape((self.num_envs, self.NUM_POINTS)))
-            self.dots_dist[:,self.draw_step-1] = torch.where(z_mask, -1, torch.any(dist, dim=-1)).reshape(self.num_envs)
-            mask = self.dots_dist > -1
-            return torch.logical_and(torch.all(self.dots_dist[mask], dim=-1), torch.all(self.ref_dist, dim=-1))
+            current_dot = self.dots[self.draw_step-1].pose.p.reshape(self.num_envs, 1, 3)
+            z_mask = current_dot[:, :, 2] < 0
+
+            # 当前 dot 是否贴近目标圆点
+            dist = torch.sqrt(
+                torch.sum(
+                    (current_dot[:, :, None, :2] - self.triangles[:, None, :, :])**2,
+                    dim=-1
+                )
+            ) < self.THRESHOLD
+
+            # 更新覆盖记录
+            self.ref_dist = torch.logical_or(
+                self.ref_dist,
+                (1 - z_mask.int()) * dist.reshape((self.num_envs, self.NUM_POINTS))
+            )
+
+            # 记录 dot 是否有效
+            self.dots_dist[:, self.draw_step-1] = torch.where(
+                z_mask,
+                -1,
+                torch.any(dist, dim=-1)
+            ).reshape(self.num_envs)
+
+            # ---- 宽松的成功条件 ----
+            # (1) 覆盖率 >= 95%
+            coverage_ratio = self.ref_dist.float().mean(dim=1)
+
+            # (2) 平均半径误差 < 阈值
+            dots_mask = self.dots_dist > -1
+            dot_positions = torch.stack([d.pose.p for d in self.dots], dim=1)[:, :, :2]
+            dot_positions = dot_positions[dots_mask].reshape(self.num_envs, -1, 2)
+            dist_to_center = torch.norm(dot_positions, dim=-1)
+            avg_radius_error = torch.abs(dist_to_center.mean(dim=-1) - self.RADIUS)
+
+            return torch.logical_and(
+                coverage_ratio > 0.95,
+                avg_radius_error < 0.02   # 2cm 容忍度
+            )
+
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
 
     def compute_dense_reward(self, obs=None, action=None, info=None):
         """
-        Dense reward:
-        1. 基础半径奖励（始终存在，保证贴近圆周）
-        2. 新覆盖点半径奖励加成（推动探索）
-        3. 覆盖奖励（新覆盖点加分）
-        4. 进度奖励（覆盖率越高奖励越大）
-        5. 方向一致性奖励（顺时针/逆时针，避免来回）
-        6. 重复覆盖惩罚（来回涂抹会被惩罚）
-        7. 动作惩罚（抑制抖动）
+        Dense reward (简化版):
+        1. Z 高度稳定性奖励
+        2. 半径奖励（始终存在，保证贴近圆周）
+        3. 新覆盖点奖励（推动探索覆盖整圈）
         """
         reward = torch.zeros(self.num_envs, device=self.device)
 
@@ -201,66 +231,29 @@ class DrawCircleEnv(BaseEnv):
         brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
 
-        # 只在画布平面附近计算奖励
+        # -------- (1) Z 高度稳定性 --------
         z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02
+        z_reward = z_mask.float() * 0.5  # 在画布附近加固定奖励
+        reward += z_reward
 
-        # -------- (1) 半径误差奖励 --------
+        # -------- (2) 半径误差奖励 --------
         dist_to_center = torch.linalg.norm(brush_xy, dim=1)
         radius_error = torch.abs(dist_to_center - self.RADIUS)
-        base_radius_reward = torch.exp(-100 * radius_error)  # 高斯型 reward
+        radius_reward = torch.exp(-100 * radius_error)  # 高斯型 reward
+        reward += radius_reward * z_mask.float()
 
-        # -------- (2) 覆盖检测 --------
+        # -------- (3) 新覆盖点奖励 --------
         dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)  # [num_envs, 1, NUM_POINTS]
         near_goal = dist.squeeze(1) < self.THRESHOLD
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
-        repeat_cover = torch.logical_and(near_goal, self.ref_dist)
 
-        # 半径奖励 = 基础奖励 + 新覆盖点加成
-        radius_reward = base_radius_reward * 0.5  # 始终存在
-        radius_bonus = new_cover.any(dim=1).float() * 0.5  # 新点加成
-        reward += (radius_reward + radius_bonus) * z_mask.float()
-
-        # -------- (3) 覆盖奖励 --------
         cover_reward = new_cover.float().sum(dim=1) * 0.3
         reward += cover_reward
 
         # 更新覆盖情况
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
-        # -------- (4) 进度奖励 --------
-        coverage_ratio = self.ref_dist.float().mean(dim=1)  # 覆盖比例
-        reward += 1.0 * coverage_ratio
-
-        # -------- (5) 方向一致性 --------
-        theta = torch.atan2(brush_xy[:, 1], brush_xy[:, 0])  # 当前角度
-        if not hasattr(self, "prev_theta"):
-            self.prev_theta = theta.clone()
-
-        delta_theta = theta - self.prev_theta
-        delta_theta = (delta_theta + math.pi) % (2 * math.pi) - math.pi  # 归一化到 [-pi, pi]
-
-        # 正向奖励：连续前进
-        direction_reward = torch.cos(delta_theta).clamp(min=0) * 0.1
-        reward += direction_reward * z_mask.float()
-
-        # 反向惩罚：来回倒退
-        reverse_penalty = (torch.cos(delta_theta) < 0).float() * 0.5
-        reward -= reverse_penalty * z_mask.float()
-
-        self.prev_theta = theta.clone()
-
-        # -------- (6) 重复覆盖惩罚 --------
-        repeat_penalty = repeat_cover.float().sum(dim=1) * 0.2
-        reward -= repeat_penalty
-
-        # -------- (7) 动作惩罚 --------
-        if action is not None:
-            reward -= 0.01 * torch.norm(action, dim=1)
-
         return reward
-
-
-
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8
