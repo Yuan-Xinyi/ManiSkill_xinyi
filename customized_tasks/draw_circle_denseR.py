@@ -41,9 +41,9 @@ class DrawCircleEnv(BaseEnv):
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
-    THRESHOLD = 0.015  # 15mm
+    THRESHOLD = 0.025
     RADIUS = 0.15
-    NUM_POINTS = 200
+    NUM_POINTS = 153
 
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
@@ -174,55 +174,22 @@ class DrawCircleEnv(BaseEnv):
 
     def success_check(self):
         if self.draw_step > 0:
-            current_dot = self.dots[self.draw_step-1].pose.p.reshape(self.num_envs, 1, 3)
-            z_mask = current_dot[:, :, 2] < 0
-
-            # 当前 dot 是否贴近目标圆点
-            dist = torch.sqrt(
-                torch.sum(
-                    (current_dot[:, :, None, :2] - self.triangles[:, None, :, :])**2,
-                    dim=-1
-                )
-            ) < self.THRESHOLD
-
-            # 更新覆盖记录
-            self.ref_dist = torch.logical_or(
-                self.ref_dist,
-                (1 - z_mask.int()) * dist.reshape((self.num_envs, self.NUM_POINTS))
-            )
-
-            # 记录 dot 是否有效
-            self.dots_dist[:, self.draw_step-1] = torch.where(
-                z_mask,
-                -1,
-                torch.any(dist, dim=-1)
-            ).reshape(self.num_envs)
-
-            # ---- 宽松的成功条件 ----
-            # (1) 覆盖率 >= 95%
-            coverage_ratio = self.ref_dist.float().mean(dim=1)
-
-            # (2) 平均半径误差 < 阈值
-            dots_mask = self.dots_dist > -1
-            dot_positions = torch.stack([d.pose.p for d in self.dots], dim=1)[:, :, :2]
-            dot_positions = dot_positions[dots_mask].reshape(self.num_envs, -1, 2)
-            dist_to_center = torch.norm(dot_positions, dim=-1)
-            avg_radius_error = torch.abs(dist_to_center.mean(dim=-1) - self.RADIUS)
-
-            return torch.logical_and(
-                coverage_ratio > 0.95,
-                avg_radius_error < 0.02   # 2cm 容忍度
-            )
-
+            current_dot = self.dots[self.draw_step-1].pose.p.reshape(self.num_envs,1,3)
+            z_mask = current_dot[:,:,2] < 0
+            dist = torch.sqrt(torch.sum((current_dot[:,:,None,:2] - self.triangles[:,None,:,:])**2, dim=-1)) < self.THRESHOLD
+            self.ref_dist = torch.logical_or(self.ref_dist, (1 - z_mask.int()) * dist.reshape((self.num_envs, self.NUM_POINTS)))
+            self.dots_dist[:,self.draw_step-1] = torch.where(z_mask, -1, torch.any(dist, dim=-1)).reshape(self.num_envs)
+            mask = self.dots_dist > -1
+            return torch.logical_and(torch.all(self.dots_dist[mask], dim=-1), torch.all(self.ref_dist, dim=-1))
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
 
     def compute_dense_reward(self, obs=None, action=None, info=None):
         """
-        Dense reward (简化版):
-        1. Z 高度稳定性奖励
-        2. 半径奖励（始终存在，保证贴近圆周）
-        3. 新覆盖点奖励（推动探索覆盖整圈）
+        Dense reward:
+        - 高斯环形半径奖励：鼓励笔尖停留在半径 R 的环上
+        - 覆盖奖励：新覆盖点加分
+        - 进度奖励：覆盖率越高奖励越大
+        - 动作惩罚：减少抖动
         """
         reward = torch.zeros(self.num_envs, device=self.device)
 
@@ -231,27 +198,35 @@ class DrawCircleEnv(BaseEnv):
         brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
 
-        # -------- (1) Z 高度稳定性 --------
+        # ---- (1) Z 限制 ----
         z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02
-        z_reward = z_mask.float() * 0.5  # 在画布附近加固定奖励
-        reward += z_reward
 
-        # -------- (2) 半径误差奖励 --------
+        # ---- (2) 高斯环形半径奖励 ----
         dist_to_center = torch.linalg.norm(brush_xy, dim=1)
-        radius_error = torch.abs(dist_to_center - self.RADIUS)
-        radius_reward = torch.exp(-100 * radius_error)  # 高斯型 reward
-        reward += radius_reward * z_mask.float()
+        radius_error = dist_to_center - self.RADIUS
 
-        # -------- (3) 新覆盖点奖励 --------
+        sigma = 0.02  # 容忍度 ~ 2cm
+        radius_reward = torch.exp(- (radius_error ** 2) / (2 * sigma ** 2))
+        reward += 1.0 * radius_reward * z_mask.float()  # 提高权重，让圆环更强约束
+
+        # ---- (3) 覆盖奖励 ----
         dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)  # [num_envs, 1, NUM_POINTS]
         near_goal = dist.squeeze(1) < self.THRESHOLD
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
 
-        cover_reward = new_cover.float().sum(dim=1) * 0.2
+        cover_reward = new_cover.float().sum(dim=1) * 0.3
         reward += cover_reward
 
-        # 更新覆盖情况
+        # 更新覆盖点
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
+
+        # ---- (4) 进度奖励 ----
+        coverage_ratio = self.ref_dist.float().mean(dim=1)
+        reward += 1.5 * coverage_ratio
+
+        # ---- (5) 动作惩罚 ----
+        if action is not None:
+            reward -= 0.01 * torch.norm(action, dim=1)
 
         return reward
 
