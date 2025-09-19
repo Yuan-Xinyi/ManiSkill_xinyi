@@ -173,37 +173,43 @@ class DrawCircleEnv(BaseEnv):
             self.scene._gpu_apply_all()
 
     def success_check(self):
-        if self.draw_step > 0.5 * self.NUM_POINTS:  # 至少画了一些点才判定
-            # 收集所有已画的 dot
+        if self.draw_step > 0.5 * self.NUM_POINTS:  # 至少画够一半点才判定
+            # 收集所有已画的 dot (只取 xy 平面)
             dot_positions = torch.stack([d.pose.p for d in self.dots[:self.draw_step]], dim=1)[:, :, :2]
-            # mask 掉无效点（z < 0 的）
-            valid_mask = dot_positions[..., 1].isfinite()  # 简单过滤无效
-            valid_dots = dot_positions[valid_mask].reshape(self.num_envs, -1, 2)
 
             success_flags = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
             for env_idx in range(self.num_envs):
-                dots = valid_dots[env_idx]
+                dots = dot_positions[env_idx]
+
                 if dots.shape[0] < 0.5 * self.NUM_POINTS:  # 点太少不判定
                     continue
 
                 # --- (1) 拟合圆 ---
-                # 构造 A 和 b，用最小二乘法解 (x^2 + y^2, x, y, 1)
                 x = dots[:, 0]
                 y = dots[:, 1]
-                A = torch.stack([2*x, 2*y, torch.ones_like(x)], dim=1)
-                b = (x**2 + y**2).unsqueeze(1)
+                A = torch.stack([2 * x, 2 * y, torch.ones_like(x)], dim=1)
+                b = (x ** 2 + y ** 2).unsqueeze(1)
 
-                sol, _ = torch.lstsq(b, A)  # 解 [xc, yc, c]
+                # 解最小二乘 [xc, yc, c]
+                sol, _ = torch.lstsq(b, A)
                 xc, yc, c = sol[:3, 0]
-                R_fit = torch.sqrt(xc**2 + yc**2 + c)
+                R_fit = torch.sqrt(xc ** 2 + yc ** 2 + c)
 
                 # --- (2) 计算残差 ---
-                dist_to_center = torch.sqrt((x - xc)**2 + (y - yc)**2)
+                dist_to_center = torch.sqrt((x - xc) ** 2 + (y - yc) ** 2)
                 residual = torch.mean(torch.abs(dist_to_center - R_fit))
 
-                # --- (3) 判定条件 ---
-                if torch.abs(R_fit - self.RADIUS) < 0.02 and residual < 0.01:
+                # --- (3) 角度覆盖度 ---
+                theta = torch.atan2(y - yc, x - xc)
+                theta_sorted, _ = torch.sort(theta)
+
+                # 两种情况：正常分布 / 跨越 -pi 与 pi 边界
+                angle_span = theta_sorted[-1] - theta_sorted[0]
+                angle_span = torch.minimum(angle_span, 2 * math.pi - angle_span)
+
+                # --- (4) 判定条件 ---
+                if torch.abs(R_fit - self.RADIUS) < 0.02 and residual < 0.01 and angle_span > 5.2:  # ~300°
                     success_flags[env_idx] = True
 
             return success_flags
@@ -263,7 +269,7 @@ class DrawCircleEnv(BaseEnv):
             curr_dot_pos = brush_xy
             dot_dist = torch.norm(curr_dot_pos - prev_dot_pos, dim=1)
 
-            # 距离接近 DOT_THICKNESS (~1/2 画笔直径) 时最优
+            # 距离接近 DOT_THICKNESS (~ 0.5 画笔直径) 时最优
             continuity_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS)**2)
             reward += 0.5 * continuity_reward
 
