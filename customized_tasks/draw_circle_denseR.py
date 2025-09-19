@@ -43,7 +43,7 @@ class DrawCircleEnv(BaseEnv):
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
     THRESHOLD = 0.025
     RADIUS = 0.15
-    NUM_POINTS = 153
+    NUM_POINTS = 200
 
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
@@ -173,7 +173,7 @@ class DrawCircleEnv(BaseEnv):
             self.scene._gpu_apply_all()
 
     def success_check(self):
-        if self.draw_step > 10:  # 至少画了一些点才判定
+        if self.draw_step > 0.5 * self.NUM_POINTS:  # 至少画了一些点才判定
             # 收集所有已画的 dot
             dot_positions = torch.stack([d.pose.p for d in self.dots[:self.draw_step]], dim=1)[:, :, :2]
             # mask 掉无效点（z < 0 的）
@@ -184,7 +184,7 @@ class DrawCircleEnv(BaseEnv):
 
             for env_idx in range(self.num_envs):
                 dots = valid_dots[env_idx]
-                if dots.shape[0] < 30:  # 点太少不判定
+                if dots.shape[0] < 0.5 * self.NUM_POINTS:  # 点太少不判定
                     continue
 
                 # --- (1) 拟合圆 ---
@@ -263,8 +263,8 @@ class DrawCircleEnv(BaseEnv):
             curr_dot_pos = brush_xy
             dot_dist = torch.norm(curr_dot_pos - prev_dot_pos, dim=1)
 
-            # 距离接近 DOT_THICKNESS (~画笔直径) 时最优
-            continuity_reward = torch.exp(-50 * (dot_dist - self.DOT_THICKNESS)**2)
+            # 距离接近 DOT_THICKNESS (~1/2 画笔直径) 时最优
+            continuity_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS)**2)
             reward += 0.5 * continuity_reward
 
 
