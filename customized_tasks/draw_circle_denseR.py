@@ -173,15 +173,43 @@ class DrawCircleEnv(BaseEnv):
             self.scene._gpu_apply_all()
 
     def success_check(self):
-        if self.draw_step > 0:
-            current_dot = self.dots[self.draw_step-1].pose.p.reshape(self.num_envs,1,3)
-            z_mask = current_dot[:,:,2] < 0
-            dist = torch.sqrt(torch.sum((current_dot[:,:,None,:2] - self.triangles[:,None,:,:])**2, dim=-1)) < self.THRESHOLD
-            self.ref_dist = torch.logical_or(self.ref_dist, (1 - z_mask.int()) * dist.reshape((self.num_envs, self.NUM_POINTS)))
-            self.dots_dist[:,self.draw_step-1] = torch.where(z_mask, -1, torch.any(dist, dim=-1)).reshape(self.num_envs)
-            mask = self.dots_dist > -1
-            return torch.logical_and(torch.all(self.dots_dist[mask], dim=-1), torch.all(self.ref_dist, dim=-1))
+        if self.draw_step > 10:  # 至少画了一些点才判定
+            # 收集所有已画的 dot
+            dot_positions = torch.stack([d.pose.p for d in self.dots[:self.draw_step]], dim=1)[:, :, :2]
+            # mask 掉无效点（z < 0 的）
+            valid_mask = dot_positions[..., 1].isfinite()  # 简单过滤无效
+            valid_dots = dot_positions[valid_mask].reshape(self.num_envs, -1, 2)
+
+            success_flags = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+            for env_idx in range(self.num_envs):
+                dots = valid_dots[env_idx]
+                if dots.shape[0] < 30:  # 点太少不判定
+                    continue
+
+                # --- (1) 拟合圆 ---
+                # 构造 A 和 b，用最小二乘法解 (x^2 + y^2, x, y, 1)
+                x = dots[:, 0]
+                y = dots[:, 1]
+                A = torch.stack([2*x, 2*y, torch.ones_like(x)], dim=1)
+                b = (x**2 + y**2).unsqueeze(1)
+
+                sol, _ = torch.lstsq(b, A)  # 解 [xc, yc, c]
+                xc, yc, c = sol[:3, 0]
+                R_fit = torch.sqrt(xc**2 + yc**2 + c)
+
+                # --- (2) 计算残差 ---
+                dist_to_center = torch.sqrt((x - xc)**2 + (y - yc)**2)
+                residual = torch.mean(torch.abs(dist_to_center - R_fit))
+
+                # --- (3) 判定条件 ---
+                if torch.abs(R_fit - self.RADIUS) < 0.02 and residual < 0.01:
+                    success_flags[env_idx] = True
+
+            return success_flags
+
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
 
     def compute_dense_reward(self, obs=None, action=None, info=None):
         """
@@ -227,6 +255,18 @@ class DrawCircleEnv(BaseEnv):
         # ---- (5) 动作惩罚 ----
         if action is not None:
             reward -= 0.01 * torch.norm(action, dim=1)
+
+        # ---- (6) 连续性奖励：鼓励点之间紧密相连 ----
+        if self.draw_step > 1:
+            # 当前点和上一个点的位置
+            prev_dot_pos = self.dots[self.draw_step-2].pose.p[:, :2]
+            curr_dot_pos = brush_xy
+            dot_dist = torch.norm(curr_dot_pos - prev_dot_pos, dim=1)
+
+            # 距离接近 DOT_THICKNESS (~画笔直径) 时最优
+            continuity_reward = torch.exp(-50 * (dot_dist - self.DOT_THICKNESS)**2)
+            reward += 0.5 * continuity_reward
+
 
         return reward
 
