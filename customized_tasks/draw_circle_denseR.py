@@ -41,7 +41,7 @@ class DrawCircleEnv(BaseEnv):
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
-    THRESHOLD = 0.025
+    THRESHOLD = 0.0075  # 7.5mm
     RADIUS = 0.15
     NUM_POINTS = 200
 
@@ -247,7 +247,7 @@ class DrawCircleEnv(BaseEnv):
         near_goal = dist.squeeze(1) < self.THRESHOLD
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
 
-        cover_reward = new_cover.float().sum(dim=1) * 0.3
+        cover_reward = new_cover.float().sum(dim=1) * 0.1
         reward += cover_reward
 
         # 更新覆盖情况
