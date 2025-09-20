@@ -19,6 +19,36 @@ from mani_skill.utils.structs.pose import Pose
 from mani_skill.utils.structs.types import SceneConfig, SimConfig
 
 
+class CurriculumScheduler:
+    def __init__(self):
+        self.curr_level = 0
+
+    def update(self, global_step: int):
+        # 基于 step 的课程调度，可以调整分界
+        if global_step < 1e5:
+            self.curr_level = 0
+        elif global_step < 3e5:
+            self.curr_level = 1
+        elif global_step < 6e5:
+            self.curr_level = 2
+        else:
+            self.curr_level = 3
+
+    def get_params(self):
+        if self.curr_level == 0:
+            return dict(num_points=50, sigma=0.05, threshold=0.05,
+                        w_shape=1.0, w_cover=0.3, w_progress=0.0, w_cont=0.0)
+        elif self.curr_level == 1:
+            return dict(num_points=100, sigma=0.03, threshold=0.03,
+                        w_shape=0.8, w_cover=0.5, w_progress=0.05, w_cont=0.0)
+        elif self.curr_level == 2:
+            return dict(num_points=150, sigma=0.02, threshold=0.02,
+                        w_shape=0.5, w_cover=1.0, w_progress=0.1, w_cont=0.3)
+        else:
+            return dict(num_points=200, sigma=0.01, threshold=0.01,
+                        w_shape=0.3, w_cover=1.0, w_progress=0.2, w_cont=0.5)
+
+
 @register_env("DrawCircle-denseR", max_episode_steps=300)
 class DrawCircleEnv(BaseEnv):
     r"""
@@ -41,14 +71,14 @@ class DrawCircleEnv(BaseEnv):
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
-    THRESHOLD = 0.025
     RADIUS = 0.15
-    NUM_POINTS = 100
 
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
 
     def __init__(self, *args, robot_uids="panda_stick", **kwargs):
+        self.global_step = 0
+        self.scheduler = CurriculumScheduler()
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
         self._reward_mode = 'normalized_dense'
 
@@ -93,6 +123,10 @@ class DrawCircleEnv(BaseEnv):
         self.canvas.add_box_collision(half_size=[0.4, 0.6, self.CANVAS_THICKNESS / 2])
         self.canvas.initial_pose = sapien.Pose(p=[-0.1, 0, self.CANVAS_THICKNESS / 2])
         self.canvas = self.canvas.build_static(name="canvas")
+
+        # curriculum: 动态 NUM_POINTS
+        params = self.scheduler.get_params()
+        self.NUM_POINTS = params["num_points"]
 
         # Create circle points
         theta = torch.linspace(0, 2 * math.pi, self.NUM_POINTS, device=self.device)
@@ -173,87 +207,66 @@ class DrawCircleEnv(BaseEnv):
             self.scene._gpu_apply_all()
 
     def success_check(self):
-        # 至少画了一半点才开始判定
         if self.draw_step > 0.5 * self.NUM_POINTS:
-            # 计算覆盖率：ref_dist 里记录了哪些轨迹点被覆盖过
             coverage_ratio = self.ref_dist.float().mean(dim=1)
-
-            # 判定条件：覆盖率大于阈值就算成功
-            # 例如覆盖 >=80% 轨迹点
             success_flags = coverage_ratio > 0.8
-
             return success_flags
-
-        # 没画够点，不判定
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-
-
     def compute_dense_reward(self, obs=None, action=None, info=None):
-        """
-        通用轨迹奖励:
-        - 轨迹贴合奖励：鼓励笔尖接近目标轨迹
-        - 覆盖奖励：新覆盖点加分
-        - 进度奖励：覆盖率越高奖励越大，且鼓励向前推进
-        - 动作惩罚：减少抖动
-        - 连续性奖励：鼓励画点之间紧密相连
-        """
+        # 更新 step & curriculum
+        self.global_step += 1
+        params = self.scheduler.get_params()
+
         reward = torch.zeros(self.num_envs, device=self.device)
 
-        # 笔尖位置
         brush_pos = self.agent.tcp.pose.p
         brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
 
-        # ---- (1) Z 限制 ----
+        # Z 限制
         z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02
 
-        # ---- (2) 轨迹贴合奖励 ----
-        dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)  # [num_envs, 1, NUM_POINTS]
-        min_dist, min_idx = dist.min(dim=2)  # [num_envs, 1]
-        min_dist = min_dist.squeeze(-1)      # [num_envs]
-        min_idx = min_idx.squeeze(-1)        # [num_envs]，记录当前位置在轨迹上的索引
+        # 轨迹贴合奖励
+        dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)
+        min_dist, min_idx = dist.min(dim=2)
+        min_dist = min_dist.squeeze(-1)
+        min_idx = min_idx.squeeze(-1)
 
-        sigma = 0.02
-        shape_reward = torch.exp(- (min_dist ** 2) / (2 * sigma ** 2))
-        reward += 1.0 * shape_reward * z_mask.float()
+        shape_reward = torch.exp(- (min_dist ** 2) / (2 * params["sigma"] ** 2))
+        reward += params["w_shape"] * shape_reward * z_mask.float()
 
-        # ---- (3) 覆盖奖励 ----
-        near_goal = dist.squeeze(1) < self.THRESHOLD
+        # 覆盖奖励
+        near_goal = dist.squeeze(1) < params["threshold"]
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
-        cover_reward = new_cover.float().sum(dim=1) * 1.0   # [0.3, 0.5, 1.0]
-        reward += cover_reward
-
-        # 更新覆盖点
+        cover_reward = new_cover.float().sum(dim=1)
+        reward += params["w_cover"] * cover_reward
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
-        # ---- (4) 进度奖励 ----
-        # 保存上一步的进度（轨迹索引），奖励推进
+        # 进度奖励
         if not hasattr(self, "last_progress"):
             self.last_progress = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
-        progress = min_idx  # 当前点的轨迹索引
-        progress_delta = (progress - self.last_progress).clamp(min=0)  # 只奖励前进
-        reward += 0.05 * progress_delta.float()
+        progress = min_idx
+        progress_delta = (progress - self.last_progress).clamp(min=0)
+        reward += params["w_progress"] * progress_delta.float()
+        self.last_progress = progress
 
-        self.last_progress = progress  # 更新进度
-
-        # 另外：整体覆盖率奖励，鼓励完成度
+        # 覆盖率奖励
         coverage_ratio = self.ref_dist.float().mean(dim=1)
         reward += 1.0 * coverage_ratio
 
-        # ---- (5) 动作惩罚 ----
+        # 动作惩罚
         if action is not None:
             reward -= 0.01 * torch.norm(action, dim=1)
 
-        # ---- (6) 连续性奖励 ----
+        # 连续性奖励
         if self.draw_step > 1:
             prev_dot_pos = self.dots[self.draw_step-2].pose.p[:, :2]
             curr_dot_pos = brush_xy
             dot_dist = torch.norm(curr_dot_pos - prev_dot_pos, dim=1)
-
             continuity_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS)**2)
-            reward += 0.5 * continuity_reward
+            reward += params["w_cont"] * continuity_reward
 
         return reward
 
