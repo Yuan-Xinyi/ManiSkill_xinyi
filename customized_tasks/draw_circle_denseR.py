@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, Union
+from typing import Any, Dict
 
 import numpy as np
 import sapien
@@ -11,7 +11,6 @@ from mani_skill.agents.robots.panda.panda_stick import PandaStick
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.sensors.camera import CameraConfig
 from mani_skill.utils import sapien_utils
-from mani_skill.utils.geometry.rotation_conversions import quaternion_to_matrix
 from mani_skill.utils.registration import register_env
 from mani_skill.utils.scene_builder.table.scene_builder import TableSceneBuilder
 from mani_skill.utils.structs.actor import Actor
@@ -19,52 +18,48 @@ from mani_skill.utils.structs.pose import Pose
 from mani_skill.utils.structs.types import SceneConfig, SimConfig
 
 
+# ---------------- Curriculum Scheduler ----------------
 class CurriculumScheduler:
     def __init__(self):
         self.curr_level = 0
+        self.last_level = -1
 
-    def update(self, global_step: int):
-        # 基于 step 的课程调度，可以调整分界
-        if global_step < 1e5:
+    def update(self, step: int):
+        """Update curriculum level based on training step"""
+        if step < 1e5:
             self.curr_level = 0
-        elif global_step < 3e5:
+        elif step < 5e5:
             self.curr_level = 1
-        elif global_step < 6e5:
-            self.curr_level = 2
         else:
-            self.curr_level = 3
+            self.curr_level = 2
+
+        if self.curr_level != self.last_level:
+            print(f"[Curriculum] Step={step} → Entering Level {self.curr_level}")
+            print(f"           Params: {self.get_params()}")
+            self.last_level = self.curr_level
 
     def get_params(self):
+        """Return parameters for current curriculum level"""
         if self.curr_level == 0:
-            return dict(num_points=50, sigma=0.05, threshold=0.05,
-                        w_shape=1.0, w_cover=0.3, w_progress=0.0, w_cont=0.0)
+            return dict(sigma=0.05, threshold=0.05,
+                        w_shape=1.0, w_cover=0.3, w_progress=0.0,
+                        w_cont=0.0, w_back=0.0)
         elif self.curr_level == 1:
-            return dict(num_points=100, sigma=0.03, threshold=0.03,
-                        w_shape=0.8, w_cover=0.5, w_progress=0.05, w_cont=0.0)
-        elif self.curr_level == 2:
-            return dict(num_points=150, sigma=0.02, threshold=0.02,
-                        w_shape=0.5, w_cover=1.0, w_progress=0.1, w_cont=0.3)
+            return dict(sigma=0.03, threshold=0.03,
+                        w_shape=1.0, w_cover=0.5, w_progress=0.2,
+                        w_cont=0.3, w_back=0.1)
         else:
-            return dict(num_points=200, sigma=0.01, threshold=0.01,
-                        w_shape=0.3, w_cover=1.0, w_progress=0.2, w_cont=0.5)
+            return dict(sigma=0.02, threshold=0.02,
+                        w_shape=1.0, w_cover=0.7, w_progress=0.5,
+                        w_cont=0.5, w_back=0.2)
 
 
+# ---------------- Environment ----------------
 @register_env("DrawCircle-denseR", max_episode_steps=300)
 class DrawCircleEnv(BaseEnv):
     r"""
-    **Task Description:**
-    Instantiates a table with a white canvas on it and a goal circle with an outline.
-    A robot with a stick is to draw the circle with a red line.
-
-    **Randomizations:**
-    - the goal circle's position on the xy-plane is randomized
-    - the goal circle's z-rotation is randomized in range [0, 2 pi]
-
-    **Success Conditions:**
-    - the drawn points by the robot are within a euclidean distance of 0.05m with points on the goal circle
+    Task: draw a circle on canvas with a stick
     """
-
-    _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/DrawCircle-v1_rt.mp4"
 
     MAX_DOTS = 300
     DOT_THICKNESS = 0.003
@@ -72,16 +67,23 @@ class DrawCircleEnv(BaseEnv):
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
     RADIUS = 0.15
+    NUM_POINTS = 200  # 用于显示的固定点数
 
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
 
     def __init__(self, *args, robot_uids="panda_stick", **kwargs):
-        self.global_step = 0
+        # 提前定义，避免 reset 时用不到
         self.scheduler = CurriculumScheduler()
+        self.global_step = 0
+
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
+
         self._reward_mode = 'normalized_dense'
 
+
+
+    # ---------------- Sim config ----------------
     @property
     def _default_sim_config(self):
         return SimConfig(
@@ -95,178 +97,165 @@ class DrawCircleEnv(BaseEnv):
         )
 
     @property
-    def _default_sensor_configs(self):
-        pose = sapien_utils.look_at(eye=[0.3, 0, 0.8], target=[0, 0, 0.1])
-        return [
-            CameraConfig("base_camera", pose=pose, width=320, height=240, fov=1.2, near=0.01, far=100)
-        ]
-
-    @property
     def _default_human_render_camera_configs(self):
         pose = sapien_utils.look_at(eye=[0.3, 0, 0.8], target=[0, 0, 0.1])
-        return CameraConfig("render_camera", pose=pose, width=1280, height=960, fov=1.2, near=0.01, far=100)
+        return CameraConfig("render_camera", pose=pose,
+                            width=1280, height=960, fov=1.2, near=0.01, far=100)
 
+
+
+    @property
+    def _default_sensor_configs(self):
+        pose = sapien_utils.look_at(eye=[0.3, 0, 0.8], target=[0, 0, 0.1])
+        return [CameraConfig("base_camera", pose=pose, width=320, height=240, fov=1.2, near=0.01, far=100)]
+
+    # ---------------- Load scene ----------------
     def _load_agent(self, options: dict):
         super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
 
     def _load_scene(self, options: dict):
-        """Load table, canvas, dots, and circular goal points"""
         self.table_scene = TableSceneBuilder(self, robot_init_qpos_noise=0)
         self.table_scene.build()
 
-        # Build canvas
-        self.canvas = self.scene.create_actor_builder()
-        self.canvas.add_box_visual(
+        # Canvas
+        canvas = self.scene.create_actor_builder()
+        canvas.add_box_visual(
             half_size=[0.4, 0.6, self.CANVAS_THICKNESS / 2],
-            material=sapien.render.RenderMaterial(base_color=[1, 1, 1, 1])
+            material=sapien.render.RenderMaterial(base_color=[1, 1, 1, 1]),
         )
-        self.canvas.add_box_collision(half_size=[0.4, 0.6, self.CANVAS_THICKNESS / 2])
-        self.canvas.initial_pose = sapien.Pose(p=[-0.1, 0, self.CANVAS_THICKNESS / 2])
-        self.canvas = self.canvas.build_static(name="canvas")
+        canvas.add_box_collision(half_size=[0.4, 0.6, self.CANVAS_THICKNESS / 2])
+        canvas.initial_pose = sapien.Pose(p=[-0.1, 0, self.CANVAS_THICKNESS / 2])
+        self.canvas = canvas.build_static(name="canvas")
 
-        # curriculum: 动态 NUM_POINTS
-        params = self.scheduler.get_params()
-        self.NUM_POINTS = params["num_points"]
-
-        # Create circle points
+        # Circle points (固定200个)
         theta = torch.linspace(0, 2 * math.pi, self.NUM_POINTS, device=self.device)
         circle_points = torch.stack([
             self.RADIUS * torch.cos(theta),
             self.RADIUS * torch.sin(theta),
-            torch.ones_like(theta) * (self.CANVAS_THICKNESS + 0.001)
+            torch.ones_like(theta) * (self.CANVAS_THICKNESS + 0.001),
         ], dim=1).cpu().numpy()
-        self.original_circle_points = circle_points
 
-        # Visualize circle points
+        self.original_circle_points = circle_points
+        self.triangles = torch.from_numpy(circle_points[:, :2]).unsqueeze(0).repeat(self.num_envs, 1, 1).to(self.device)
+
+        # Visualize fixed goal points
+        self.goal_points = []
         for i, p in enumerate(circle_points):
             builder = self.scene.create_actor_builder()
-            builder.add_sphere_visual(radius=0.002, material=sapien.render.RenderMaterial(base_color=[0,0,0,1]))
+            builder.add_sphere_visual(radius=0.002, material=sapien.render.RenderMaterial(base_color=[0, 0, 0, 1]))
             builder.initial_pose = sapien.Pose(p=p)
-            builder.build_kinematic(name=f"goal_circle_point_{i}")
+            actor = builder.build_kinematic(name=f"goal_circle_point_{i}")
+            self.goal_points.append(actor)
 
         # Initialize dots
         self.dots = []
-        color_choices = torch.randint(0, len(self.BRUSH_COLORS), (self.num_envs,))
         for i in range(self.MAX_DOTS):
-            actors = []
-            if len(self.BRUSH_COLORS) > 1:
-                for env_idx in range(self.num_envs):
-                    builder = self.scene.create_actor_builder()
-                    builder.add_cylinder_visual(
-                        radius=self.BRUSH_RADIUS,
-                        half_length=self.DOT_THICKNESS/2,
-                        material=sapien.render.RenderMaterial(base_color=self.BRUSH_COLORS[color_choices[env_idx]])
-                    )
-                    builder.set_scene_idxs([env_idx])
-                    builder.initial_pose = sapien.Pose(p=[0,0,0.1])
-                    actor = builder.build_kinematic(name=f"dot_{i}_{env_idx}")
-                    actors.append(actor)
-                self.dots.append(Actor.merge(actors))
-            else:
-                builder = self.scene.create_actor_builder()
-                builder.add_cylinder_visual(
-                    radius=self.BRUSH_RADIUS,
-                    half_length=self.DOT_THICKNESS/2,
-                    material=sapien.render.RenderMaterial(base_color=self.BRUSH_COLORS[0])
-                )
-                builder.initial_pose = sapien.Pose(p=[0,0,0.1])
-                actor = builder.build_kinematic(name=f"dot_{i}")
-                self.dots.append(actor)
+            builder = self.scene.create_actor_builder()
+            builder.add_cylinder_visual(
+                radius=self.BRUSH_RADIUS,
+                half_length=self.DOT_THICKNESS / 2,
+                material=sapien.render.RenderMaterial(base_color=self.BRUSH_COLORS[0]),
+            )
+            builder.initial_pose = sapien.Pose(p=[0, 0, 0.1])
+            actor = builder.build_kinematic(name=f"dot_{i}")
+            self.dots.append(actor)
 
-        # Initialize reference distance and triangles (circle xy)
+        # Coverage buffer
         self.ref_dist = torch.zeros((self.num_envs, self.NUM_POINTS), device=self.device, dtype=torch.bool)
-        self.triangles = torch.from_numpy(circle_points[:, :2]).unsqueeze(0).repeat(self.num_envs, 1, 1).to(self.device)
 
+    # ---------------- Reset ----------------
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         self.draw_step = 0
-        with torch.device(self.device):
-            b = len(env_idx)
-            self.table_scene.initialize(env_idx)
+        self.table_scene.initialize(env_idx)
 
-            # Reset dots positions
-            for dot in self.dots:
-                dot.set_pose(sapien.Pose(p=[0,0,-self.DOT_THICKNESS], q=euler2quat(0, math.pi/2, 0)))
+        for dot in self.dots:
+            dot.set_pose(sapien.Pose(p=[0, 0, -self.DOT_THICKNESS], q=euler2quat(0, math.pi / 2, 0)))
 
-            # Reset ref_dist
-            self.ref_dist[env_idx] = torch.zeros((b, self.NUM_POINTS), dtype=torch.bool, device=self.device)
+        self.ref_dist[env_idx] = torch.zeros((len(env_idx), self.NUM_POINTS), dtype=torch.bool, device=self.device)
+
+        # update curriculum
+        self.scheduler.update(self.global_step)
 
     def _after_control_step(self):
         if self.gpu_sim_enabled:
             self.scene._gpu_fetch_all()
 
-        robot_touching_table = (self.agent.tcp.pose.p[:,2] < self.CANVAS_THICKNESS + self.DOT_THICKNESS + 0.005)
-        robot_brush_pos = torch.zeros((self.num_envs,3), device=self.device)
-        robot_brush_pos[:,2] = -self.DOT_THICKNESS
-        robot_brush_pos[robot_touching_table,:2] = self.agent.tcp.pose.p[robot_touching_table,:2]
-        robot_brush_pos[robot_touching_table,2] = self.DOT_THICKNESS/2 + self.CANVAS_THICKNESS
-        new_dot_pos = Pose.create_from_pq(robot_brush_pos, euler2quat(0, math.pi/2,0))
+        robot_touching = (self.agent.tcp.pose.p[:, 2] < self.CANVAS_THICKNESS + self.DOT_THICKNESS + 0.005)
+        brush_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        brush_pos[:, 2] = -self.DOT_THICKNESS
+        brush_pos[robot_touching, :2] = self.agent.tcp.pose.p[robot_touching, :2]
+        brush_pos[robot_touching, 2] = self.DOT_THICKNESS / 2 + self.CANVAS_THICKNESS
+
+        new_dot_pos = Pose.create_from_pq(brush_pos, euler2quat(0, math.pi / 2, 0))
         self.dots[self.draw_step].set_pose(new_dot_pos)
         self.draw_step += 1
 
         if self.gpu_sim_enabled:
             self.scene._gpu_apply_all()
 
-    def success_check(self):
-        if self.draw_step > 0.5 * self.NUM_POINTS:
-            coverage_ratio = self.ref_dist.float().mean(dim=1)
-            success_flags = coverage_ratio > 0.8
-            return success_flags
-        return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
-    def compute_dense_reward(self, obs=None, action=None, info=None):
-        # 更新 step & curriculum
         self.global_step += 1
+
+    # ---------------- Reward ----------------
+    def compute_dense_reward(self, obs=None, action=None, info=None):
         params = self.scheduler.get_params()
+        sigma = params["sigma"]
+        threshold = params["threshold"]
+        w_shape, w_cover, w_progress, w_cont, w_back = (
+            params["w_shape"], params["w_cover"], params["w_progress"], params["w_cont"], params["w_back"]
+        )
 
         reward = torch.zeros(self.num_envs, device=self.device)
 
         brush_pos = self.agent.tcp.pose.p
         brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
-
-        # Z 限制
         z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02
 
-        # 轨迹贴合奖励
+        # shape reward
         dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)
         min_dist, min_idx = dist.min(dim=2)
         min_dist = min_dist.squeeze(-1)
         min_idx = min_idx.squeeze(-1)
 
-        shape_reward = torch.exp(- (min_dist ** 2) / (2 * params["sigma"] ** 2))
-        reward += params["w_shape"] * shape_reward * z_mask.float()
+        shape_reward = torch.exp(- (min_dist ** 2) / (2 * sigma ** 2))
+        reward += w_shape * shape_reward * z_mask.float()
 
-        # 覆盖奖励
-        near_goal = dist.squeeze(1) < params["threshold"]
+        # coverage reward
+        near_goal = dist.squeeze(1) < threshold
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
         cover_reward = new_cover.float().sum(dim=1)
-        reward += params["w_cover"] * cover_reward
+        reward += w_cover * cover_reward
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
-        # 进度奖励
+        # progress reward + back penalty
         if not hasattr(self, "last_progress"):
             self.last_progress = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
         progress = min_idx
-        progress_delta = (progress - self.last_progress).clamp(min=0)
-        reward += params["w_progress"] * progress_delta.float()
+        progress_delta = (progress - self.last_progress)
+        forward = torch.clamp(progress_delta, min=0)
+        backward = torch.clamp(-progress_delta, min=0)
+
+        reward += w_progress * forward.float()
+        reward -= w_back * backward.float()
+
         self.last_progress = progress
 
-        # 覆盖率奖励
+        # coverage ratio
         coverage_ratio = self.ref_dist.float().mean(dim=1)
-        reward += 1.0 * coverage_ratio
+        reward += 0.5 * coverage_ratio
 
-        # 动作惩罚
+        # continuity reward
+        if self.draw_step > 1:
+            prev_dot = self.dots[self.draw_step - 2].pose.p[:, :2]
+            curr_dot = brush_xy
+            dot_dist = torch.norm(curr_dot - prev_dot, dim=1)
+            cont_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS) ** 2)
+            reward += w_cont * cont_reward
+
+        # action penalty
         if action is not None:
             reward -= 0.01 * torch.norm(action, dim=1)
-
-        # 连续性奖励
-        if self.draw_step > 1:
-            prev_dot_pos = self.dots[self.draw_step-2].pose.p[:, :2]
-            curr_dot_pos = brush_xy
-            dot_dist = torch.norm(curr_dot_pos - prev_dot_pos, dim=1)
-            continuity_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS)**2)
-            reward += params["w_cont"] * continuity_reward
 
         return reward
 
