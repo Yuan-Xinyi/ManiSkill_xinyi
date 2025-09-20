@@ -192,12 +192,11 @@ class DrawCircleEnv(BaseEnv):
     def compute_dense_reward(self, obs=None, action=None, info=None):
         """
         通用轨迹奖励:
-        - 轨迹贴合奖励 (弱化权重)
-        - 覆盖奖励 (增强权重)
-        - 进度奖励 (奖励前进，惩罚倒退)
-        - 覆盖率里程碑奖励
-        - 动作惩罚
-        - 连续性奖励
+        - 轨迹贴合奖励：鼓励笔尖接近目标轨迹
+        - 覆盖奖励：新覆盖点加分
+        - 进度奖励：覆盖率越高奖励越大，且鼓励向前推进
+        - 动作惩罚：减少抖动
+        - 连续性奖励：鼓励画点之间紧密相连
         """
         reward = torch.zeros(self.num_envs, device=self.device)
 
@@ -209,59 +208,54 @@ class DrawCircleEnv(BaseEnv):
         # ---- (1) Z 限制 ----
         z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02
 
-        # ---- (2) 轨迹贴合奖励 (减弱权重) ----
+        # ---- (2) 轨迹贴合奖励 ----
         dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)  # [num_envs, 1, NUM_POINTS]
-        min_dist, min_idx = dist.min(dim=2)
-        min_dist = min_dist.squeeze(-1)    # [num_envs]
-        min_idx = min_idx.squeeze(-1)      # [num_envs]
+        min_dist, min_idx = dist.min(dim=2)  # [num_envs, 1]
+        min_dist = min_dist.squeeze(-1)      # [num_envs]
+        min_idx = min_idx.squeeze(-1)        # [num_envs]，记录当前位置在轨迹上的索引
+
         sigma = 0.02
         shape_reward = torch.exp(- (min_dist ** 2) / (2 * sigma ** 2))
-        reward += 0.5 * shape_reward * z_mask.float()  # 权重从 1.0 改为 0.5
+        reward += 1.0 * shape_reward * z_mask.float()
 
-        # ---- (3) 覆盖奖励 (增强权重) ----
+        # ---- (3) 覆盖奖励 ----
         near_goal = dist.squeeze(1) < self.THRESHOLD
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
-        cover_reward = new_cover.float().sum(dim=1) * 1.0  # 原来是 0.3
+        cover_reward = new_cover.float().sum(dim=1) * 1.0   # [0.3, 0.5, 1.0]
         reward += cover_reward
+
+        # 更新覆盖点
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
-        # ---- (4) 进度奖励 + 倒退惩罚 ----
+        # ---- (4) 进度奖励 ----
+        # 保存上一步的进度（轨迹索引），奖励推进
         if not hasattr(self, "last_progress"):
             self.last_progress = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
-        progress = min_idx
-        delta = progress - self.last_progress
+        progress = min_idx  # 当前点的轨迹索引
+        progress_delta = (progress - self.last_progress).clamp(min=0)  # 只奖励前进
+        reward += 0.05 * progress_delta.float()
 
-        forward_reward = 0.05 * delta.clamp(min=0).float()
-        backward_penalty = 0.1 * (-delta).clamp(min=0).float()
-        reward += forward_reward - backward_penalty
+        self.last_progress = progress  # 更新进度
 
-        # 单调更新 progress
-        self.last_progress = torch.maximum(self.last_progress, progress)
-
-        # ---- (5) 覆盖率奖励 + 里程碑奖励 ----
+        # 另外：整体覆盖率奖励，鼓励完成度
         coverage_ratio = self.ref_dist.float().mean(dim=1)
         reward += 1.0 * coverage_ratio
 
-        # milestone bonus
-        reward += (coverage_ratio > 0.25).float() * 2.0
-        reward += (coverage_ratio > 0.50).float() * 5.0
-        reward += (coverage_ratio > 0.75).float() * 10.0
-
-        # ---- (6) 动作惩罚 ----
+        # ---- (5) 动作惩罚 ----
         if action is not None:
             reward -= 0.01 * torch.norm(action, dim=1)
 
-        # ---- (7) 连续性奖励 ----
+        # ---- (6) 连续性奖励 ----
         if self.draw_step > 1:
             prev_dot_pos = self.dots[self.draw_step-2].pose.p[:, :2]
             curr_dot_pos = brush_xy
             dot_dist = torch.norm(curr_dot_pos - prev_dot_pos, dim=1)
+
             continuity_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS)**2)
             reward += 0.5 * continuity_reward
 
         return reward
-
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8
