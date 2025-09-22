@@ -37,6 +37,7 @@ imgui.ini
 /videos
 /examples/benchmarking/videos
 /runs
+/wandb
 
 # benchmarking
 /benchmark_results
