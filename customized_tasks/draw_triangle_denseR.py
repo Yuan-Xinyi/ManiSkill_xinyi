@@ -47,27 +47,27 @@ class CurriculumScheduler:
         """Return parameters for current curriculum level"""
         if self.curr_level == 0:
             return dict(sigma=0.05, threshold=0.05,
-                        w_shape=1.0, w_cover=0.3, w_progress=0.0,
+                        w_shape=1.0, w_cover=0.03, w_progress=0.0,
                         w_cont=0.0, w_back=0.0)
         elif self.curr_level == 1:
             return dict(sigma=0.04, threshold=0.045,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=1.0, w_cover=0.05, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         elif self.curr_level == 2:
             return dict(sigma=0.03, threshold=0.040,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=1.0, w_cover=0.05, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         elif self.curr_level == 3:
             return dict(sigma=0.02, threshold=0.035,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=1.0, w_cover=0.05, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         elif self.curr_level == 4:
             return dict(sigma=0.015, threshold=0.03,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=1.0, w_cover=0.05, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         else:
             return dict(sigma=0.01, threshold=0.03,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=1.0, w_cover=0.05, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
 
 
