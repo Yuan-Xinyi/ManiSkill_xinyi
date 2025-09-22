@@ -82,7 +82,7 @@ class DrawTriangleEnv(BaseEnv):
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
-    NUM_POINTS = 150   # 用于显示和 reward 的固定点数
+    NUM_POINTS = 250   # 用于显示和 reward 的固定点数
 
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
@@ -132,9 +132,10 @@ class DrawTriangleEnv(BaseEnv):
         self.canvas = canvas.build_static(name="canvas")
 
         # ---- Triangle points (替换 Circle points) ----
-        verts = torch.tensor([[0, 0.15, self.CANVAS_THICKNESS + 0.001],
-                              [-0.15, -0.15, self.CANVAS_THICKNESS + 0.001],
-                              [0.15, -0.15, self.CANVAS_THICKNESS + 0.001]], device=self.device)
+        scale = 1.5
+        verts = torch.tensor([[0, 0.15*scale, self.CANVAS_THICKNESS + 0.001],
+                              [-0.15*scale, -0.15*scale, self.CANVAS_THICKNESS + 0.001],
+                              [0.15*scale, -0.15*scale, self.CANVAS_THICKNESS + 0.001]], device=self.device)
 
         # 沿三条边插值生成 NUM_POINTS
         edge_points = []
@@ -142,6 +143,7 @@ class DrawTriangleEnv(BaseEnv):
         for i in range(3):
             start, end = verts[i], verts[(i+1) % 3]
             t = torch.linspace(0, 1, n_each, device=self.device).unsqueeze(1)
+            t = t**2
             edge_points.append((1 - t) * start + t * end)
         triangle_points = torch.cat(edge_points, dim=0)
 
