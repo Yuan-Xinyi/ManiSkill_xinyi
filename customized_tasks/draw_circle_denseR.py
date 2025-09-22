@@ -26,9 +26,9 @@ class CurriculumScheduler:
 
     def update(self, step: int):
         """Update curriculum level based on training step"""
-        if step < 1e5:
+        if step < 2e4:
             self.curr_level = 0
-        elif step < 5e5:
+        elif step < 5e4:
             self.curr_level = 1
         else:
             self.curr_level = 2
@@ -42,16 +42,16 @@ class CurriculumScheduler:
         """Return parameters for current curriculum level"""
         if self.curr_level == 0:
             return dict(sigma=0.05, threshold=0.05,
-                        w_shape=1.0, w_cover=0.3, w_progress=0.0,
+                        w_shape=1.0, w_cover=0.03, w_progress=0.0,
                         w_cont=0.0, w_back=0.0)
         elif self.curr_level == 1:
             return dict(sigma=0.03, threshold=0.03,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.2,
-                        w_cont=0.3, w_back=0.1)
+                        w_shape=1.0, w_cover=0.05, w_progress=0.002,
+                        w_cont=0.3, w_back=0.001)
         else:
             return dict(sigma=0.02, threshold=0.02,
-                        w_shape=1.0, w_cover=0.7, w_progress=0.5,
-                        w_cont=0.5, w_back=0.2)
+                        w_shape=1.0, w_cover=0.07, w_progress=0.005,
+                        w_cont=0.5, w_back=0.002)
 
 
 # ---------------- Environment ----------------
@@ -175,6 +175,8 @@ class DrawCircleEnv(BaseEnv):
 
         # update curriculum
         self.scheduler.update(self.global_step)
+        print(f"[Curriculum] step={self.global_step}, level={self.scheduler.curr_level}")
+
 
     def _after_control_step(self):
         if self.gpu_sim_enabled:
@@ -209,7 +211,6 @@ class DrawCircleEnv(BaseEnv):
         brush_pos = self.agent.tcp.pose.p
         brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
-        z_mask = torch.abs(brush_z - self.CANVAS_THICKNESS) < 0.02
 
         # shape reward
         dist = torch.cdist(brush_xy.unsqueeze(1), self.triangles)
@@ -217,14 +218,14 @@ class DrawCircleEnv(BaseEnv):
         min_dist = min_dist.squeeze(-1)
         min_idx = min_idx.squeeze(-1)
 
-        shape_reward = torch.exp(- (min_dist ** 2) / (2 * sigma ** 2))
-        reward += w_shape * shape_reward * z_mask.float()
+        ## this is the soft boundary to avoid suddenly 0 shape reward
+        z_factor = torch.exp(- ((brush_z - self.CANVAS_THICKNESS) ** 2) / (2 * (0.02 ** 2)))
+        shape_reward = w_shape * torch.exp(- (min_dist ** 2) / (2 * sigma ** 2)) * z_factor
 
         # coverage reward
         near_goal = dist.squeeze(1) < threshold
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
-        cover_reward = new_cover.float().sum(dim=1)
-        reward += w_cover * cover_reward
+        cover_reward = (w_cover * new_cover.float().sum(dim=1))
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
         # progress reward + back penalty
@@ -236,28 +237,44 @@ class DrawCircleEnv(BaseEnv):
         forward = torch.clamp(progress_delta, min=0)
         backward = torch.clamp(-progress_delta, min=0)
 
-        reward += w_progress * forward.float()
-        reward -= w_back * backward.float()
+        progress_reward = w_progress * forward.float()
+        back_penalty = - w_back * backward.float()
 
         self.last_progress = progress
 
         # coverage ratio
         coverage_ratio = self.ref_dist.float().mean(dim=1)
-        reward += 0.5 * coverage_ratio
+        coverage_bonus = 0.5 * coverage_ratio
 
         # continuity reward
+        cont_reward = torch.zeros_like(reward)
         if self.draw_step > 1:
             prev_dot = self.dots[self.draw_step - 2].pose.p[:, :2]
             curr_dot = brush_xy
             dot_dist = torch.norm(curr_dot - prev_dot, dim=1)
-            cont_reward = torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS) ** 2)
-            reward += w_cont * cont_reward
+            cont_reward = w_cont * torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS) ** 2)
 
         # action penalty
+        action_penalty = torch.zeros_like(reward)
         if action is not None:
-            reward -= 0.01 * torch.norm(action, dim=1)
+            action_penalty = -0.01 * torch.norm(action, dim=1)
+
+        # final reward
+        reward = shape_reward + cover_reward + progress_reward + back_penalty + coverage_bonus + cont_reward + action_penalty
+
+        # --- logging info for wandb ---
+        if info is not None:
+            info["shape_reward"] = shape_reward.mean().item()
+            info["cover_reward"] = cover_reward.mean().item()
+            info["progress_reward"] = progress_reward.mean().item()
+            info["back_penalty"] = back_penalty.mean().item()
+            info["coverage_bonus"] = coverage_bonus.mean().item()
+            info["continuity"] = cont_reward.mean().item()
+            info["action_penalty"] = action_penalty.mean().item()
+            info["curriculum_level"] = self.scheduler.curr_level
 
         return reward
+
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8

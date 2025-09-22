@@ -336,6 +336,16 @@ if __name__ == "__main__":
             next_done = torch.logical_or(terminations, truncations).to(torch.float32)
             rewards[step] = reward.view(-1) * args.reward_scale
 
+            # --- log reward components from infos ---
+            if logger is not None:
+                keys = ["shape_reward", "cover_reward", "progress_reward",
+                        "back_penalty", "coverage_bonus", "continuity",
+                        "action_penalty", "curriculum_level"]
+                for key in keys:
+                    if key in infos:
+                        val = np.mean(infos[key])  # vector env, 取平均
+                        logger.add_scalar(f"rewards/{key}", val, global_step)
+
             if "final_info" in infos:
                 final_info = infos["final_info"]
                 done_mask = infos["_final_info"]
