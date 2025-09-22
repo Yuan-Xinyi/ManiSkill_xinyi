@@ -32,8 +32,8 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 # ---------------customized tasks----------------
-from customized_tasks import draw_circle_denseR
-# from customized_tasks import draw_triangle_denseR
+# from customized_tasks import draw_circle_denseR
+from customized_tasks import draw_triangle_denseR
 
 @dataclass
 class Args:
