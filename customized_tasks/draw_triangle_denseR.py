@@ -82,7 +82,7 @@ class DrawTriangleEnv(BaseEnv):
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
-    NUM_POINTS = 250   # 用于显示和 reward 的固定点数
+    NUM_POINTS = 252   # 用于显示和 reward 的固定点数, need to be divisible by 3
 
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
