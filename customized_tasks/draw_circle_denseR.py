@@ -23,6 +23,8 @@ class CurriculumScheduler:
     def __init__(self):
         self.curr_level = 0
         self.last_level = -1
+        self.last_qpos = None
+        self.last_qvel = None
 
     def update(self, step: int):
         """Update curriculum level based on training step"""
@@ -181,7 +183,7 @@ class DrawCircleEnv(BaseEnv):
         # Coverage buffer
         self.ref_dist = torch.zeros((self.num_envs, self.NUM_POINTS), device=self.device, dtype=torch.bool)
 
-    # ---------------- Reset ----------------
+    # ---------------- Reset --------------
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         self.draw_step = 0
         self.table_scene.initialize(env_idx)
@@ -190,6 +192,10 @@ class DrawCircleEnv(BaseEnv):
             dot.set_pose(sapien.Pose(p=[0, 0, -self.DOT_THICKNESS], q=euler2quat(0, math.pi / 2, 0)))
 
         self.ref_dist[env_idx] = torch.zeros((len(env_idx), self.NUM_POINTS), dtype=torch.bool, device=self.device)
+
+        '''new: now we reset the last joint pos and vel'''
+        self.last_qpos = self.agent.robot.get_qpos()  # (num_envs, 7)
+        self.last_qvel = self.agent.robot.get_qvel()  # (num_envs, 7)
 
         # update curriculum
         self.scheduler.update(self.global_step)
@@ -214,6 +220,28 @@ class DrawCircleEnv(BaseEnv):
             self.scene._gpu_apply_all()
 
         self.global_step += 1
+
+    # ---------------- Step ----------------
+    def step(self, action):
+        # update the last state:
+        self.last_qpos = self.agent.robot.get_qpos().clone().detach()
+        self.last_qvel = self.agent.robot.get_qvel().clone().detach()
+
+        # use the step function of the sapien env
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        return obs, reward, terminated, truncated, info
+
+
+    # ---------------- observation ----------------
+    def _get_obs_extra(self, info: Dict):
+        # all shapes are (num_envs, 7)
+        obs = dict(
+            last_qpos=self.last_qpos,
+            last_qvel=self.last_qvel,
+            tcp_pose=self.agent.tcp.pose.raw_pose,
+        )
+        return obs
 
     # ---------------- Reward ----------------
     def compute_dense_reward(self, obs=None, action=None, info=None):

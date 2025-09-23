@@ -31,9 +31,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# ---------------customized tasks----------------
-from customized_tasks import draw_circle_denseR
-# from customized_tasks import draw_triangle_denseR
 
 @dataclass
 class Args:
@@ -205,6 +202,14 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
+    # ---------------customized tasks----------------
+    if args.env_id == "DrawCircle-denseR":
+        from customized_tasks import draw_circle_denseR
+    elif args.env_id == "DrawTriangle-denseR":
+        from customized_tasks import draw_triangle_denseR
+    else:
+        pass
+
     # env setup
     env_kwargs = dict(obs_mode="state", render_mode="rgb_array", sim_backend="physx_cuda")
     if args.control_mode is not None:
@@ -333,6 +338,7 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(clip_action(action))
+            # todo: add last qpos code here
             next_done = torch.logical_or(terminations, truncations).to(torch.float32)
             rewards[step] = reward.view(-1) * args.reward_scale
 
