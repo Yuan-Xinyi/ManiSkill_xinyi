@@ -238,7 +238,6 @@ class DrawCircleEnv(BaseEnv):
         # all shapes are (num_envs, 7)
         obs = dict(
             last_qpos=self.last_qpos,
-            last_qvel=self.last_qvel,
             tcp_pose=self.agent.tcp.pose.raw_pose,
         )
         return obs
