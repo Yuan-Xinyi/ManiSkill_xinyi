@@ -270,7 +270,8 @@ class DrawCircleEnv(BaseEnv):
         # coverage reward
         near_goal = dist.squeeze(1) < threshold
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
-        cover_reward = (w_cover * new_cover.float().sum(dim=1))
+        # cover_reward = (w_cover * new_cover.float().sum(dim=1))
+        cover_reward = w_cover * new_cover.float().sum(dim=1) / self.NUM_POINTS
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
         # progress reward + back penalty
