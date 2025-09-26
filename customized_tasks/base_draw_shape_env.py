@@ -87,7 +87,7 @@ class BaseDrawShapeEnv(BaseEnv):
     SUPPORTED_ROBOTS: ["panda_stick"]  # type: ignore
     agent: PandaStick
 
-    def __init__(self, *args, robot_uids="panda_stick", history_len=4, **kwargs):
+    def __init__(self, *args, robot_uids="panda_stick", history_len=5, **kwargs):
         # curriculum
         self.scheduler = CurriculumScheduler()
         self.global_step = 0
@@ -217,12 +217,23 @@ class BaseDrawShapeEnv(BaseEnv):
         self.table_scene.initialize(env_idx)
         self.last_progress = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
+        # --------------- Reset brush dots ---------------
         # reset dots
         for dot in self.dots:
             dot.set_pose(sapien.Pose(
                 p=[0, 0, -self.DOT_THICKNESS],
                 q=euler2quat(0, math.pi / 2, 0))
             )
+
+        # --------------- Reset robot ---------------
+        # reset robot
+        qpos = self.agent.robot.get_qpos()  # (num_envs, nq)
+        lower = self.agent.robot.qlimits[0, :, 0]  # (num_envs, nq)
+        upper = self.agent.robot.qlimits[0, :, 1]  # (num_envs, nq)
+        # add 10% noise to initial qpos within joint limits
+        noise = 0.1 * (upper - lower) * torch.randn_like(qpos, device=self.device)
+        qpos_rand = torch.clamp(qpos + noise, lower, upper)
+        self.agent.robot.set_qpos(qpos_rand)
 
         # reset coverage
         self.ref_dist[env_idx] = 0
@@ -361,7 +372,6 @@ class BaseDrawShapeEnv(BaseEnv):
             info["curriculum_level"] = self.scheduler.curr_level
 
         return reward
-
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8
