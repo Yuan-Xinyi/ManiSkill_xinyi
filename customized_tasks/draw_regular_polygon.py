@@ -20,6 +20,7 @@ class DrawRegularPolygonEnv(BaseDrawShapeEnv):
         Return polygon points as (NUM_POINTS, 3).
         Vertices are equally spaced on a circle of radius self.RADIUS.
         """
+        self.NUM_POINTS = 80
         points_per_edge = self.NUM_POINTS // self.num_edges
 
         # 顶点角度

@@ -231,7 +231,7 @@ class BaseDrawShapeEnv(BaseEnv):
         lower = self.agent.robot.qlimits[0, :, 0]  # (num_envs, nq)
         upper = self.agent.robot.qlimits[0, :, 1]  # (num_envs, nq)
         # add 10% noise to initial qpos within joint limits
-        noise = 0.1 * (upper - lower) * torch.randn_like(qpos, device=self.device)
+        noise = 0.05 * (upper - lower) * torch.randn_like(qpos, device=self.device)
         qpos_rand = torch.clamp(qpos + noise, lower, upper)
         self.agent.robot.set_qpos(qpos_rand)
 
