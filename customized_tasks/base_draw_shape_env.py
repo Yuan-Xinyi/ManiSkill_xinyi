@@ -296,40 +296,84 @@ class BaseDrawShapeEnv(BaseEnv):
 
     # ---------------- Reward ----------------
     def compute_dense_reward(self, obs=None, action=None, info=None):
-        # 参数
         params = self.scheduler.get_params()
+        sigma = params["sigma"]
         threshold = params["threshold"]
-        w_cover = params["w_cover"]  # 新覆盖点的权重
-        w_time = 1e-6               # 时间惩罚系数，可调
+        w_shape, w_cover, w_progress, w_cont, w_back = (
+            params["w_shape"], params["w_cover"], params["w_progress"], params["w_cont"], params["w_back"]
+        )
 
-        # --- 计算覆盖 ---
+        reward = torch.zeros(self.num_envs, device=self.device)
+
         brush_pos = self.agent.tcp.pose.p
         brush_xy = brush_pos[:, :2]
+        brush_z = brush_pos[:, 2]
 
-        dist = torch.cdist(brush_xy.unsqueeze(1), self.shape_points)  # (num_envs, 1, NUM_POINTS)
-        near_goal = dist.squeeze(1) < threshold  # (num_envs, NUM_POINTS)
+        # shape reward
+        dist = torch.cdist(brush_xy.unsqueeze(1), self.shape_points)
+        min_dist, min_idx = dist.min(dim=2)
+        min_dist = min_dist.squeeze(-1)
+        min_idx = min_idx.squeeze(-1)
 
-        new_cover = torch.logical_and(near_goal, ~self.ref_dist)  # 新覆盖点
+        ## this is the soft boundary to avoid suddenly 0 shape reward
+        z_factor = torch.exp(- ((brush_z - self.CANVAS_THICKNESS) ** 2) / (2 * (0.02 ** 2)))
+        shape_reward = w_shape * torch.exp(- (min_dist ** 2) / (2 * sigma ** 2)) * z_factor
+
+        # coverage reward
+        near_goal = dist.squeeze(1) < threshold
+        new_cover = torch.logical_and(near_goal, ~self.ref_dist)
+        # cover_reward = (w_cover * new_cover.float().sum(dim=1))
         cover_reward = w_cover * new_cover.float().sum(dim=1) / self.NUM_POINTS
-
-        # 更新覆盖状态
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
-        # --- 时间惩罚 (tensor 形式，每个环境都有同样的惩罚) ---
-        time_penalty = - w_time * self.global_step * torch.ones(self.num_envs, device=self.device)
+        # progress reward + back penalty
+        if not hasattr(self, "last_progress"):
+            self.last_progress = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
-        # --- 最终奖励 ---
-        reward = cover_reward + time_penalty
+        progress = min_idx
+        progress_delta = (progress - self.last_progress)
+        forward = torch.clamp(progress_delta, min=0)
+        backward = torch.clamp(-progress_delta, min=0)
 
-        # logging
+        progress_reward = w_progress * forward.float()
+        back_penalty = - w_back * backward.float()
+
+        self.last_progress = progress
+
+        # coverage ratio
+        coverage_ratio = self.ref_dist.float().mean(dim=1)
+        coverage_bonus = 0.5 * coverage_ratio
+
+        # continuity reward
+        cont_reward = torch.zeros_like(reward)
+        if self.draw_step > 1:
+            prev_dot = self.dots[self.draw_step - 2].pose.p[:, :2]
+            curr_dot = brush_xy
+            dot_dist = torch.norm(curr_dot - prev_dot, dim=1)
+            cont_reward = w_cont * torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS) ** 2)
+
+        # action penalty
+        action_penalty = torch.zeros_like(reward)
+        if action is not None:
+            action_penalty = -0.01 * torch.norm(action, dim=1)
+
+        # final reward
+        reward = shape_reward + cover_reward + progress_reward + back_penalty + coverage_bonus + cont_reward + action_penalty
+
+        # --- logging info for wandb ---
         if info is not None:
+            info["shape_reward"] = shape_reward.mean().item()
             info["cover_reward"] = cover_reward.mean().item()
-            info["time_penalty"] = time_penalty.mean().item()
+            info["progress_reward"] = progress_reward.mean().item()
+            info["back_penalty"] = back_penalty.mean().item()
+            info["coverage_bonus"] = coverage_bonus.mean().item()
+            info["continuity"] = cont_reward.mean().item()
+            info["action_penalty"] = action_penalty.mean().item()
             info["curriculum_level"] = self.scheduler.curr_level
 
         return reward
 
 
-
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         return self.compute_dense_reward(obs, action, info) / 8
+

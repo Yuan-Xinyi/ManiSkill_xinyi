@@ -60,7 +60,7 @@ class DrawTriangleEnv(DrawRegularPolygonEnv):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, num_edges=3, **kwargs)
 
-
+# eight edges
 @register_env("DrawOctagon-denseR", max_episode_steps=300)
 class DrawOctagonEnv(DrawRegularPolygonEnv):
     def __init__(self, *args, **kwargs):
