@@ -72,6 +72,9 @@ class CurriculumScheduler:
             return dict(sigma=0.01, threshold=0.03,
                         w_shape=0.3, w_cover=0.8, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
+        # return dict(sigma=0.05, threshold=0.03,
+        #             w_shape=0.3, w_cover=0.8, w_progress=0.002,
+        #             w_cont=0.3, w_back=0.001)
 
 
 # ---------------- Environment ----------------
@@ -288,16 +291,9 @@ class BaseDrawShapeEnv(BaseEnv):
         made_progress = coverage_ratio > self.last_coverage + 1e-6
         self.no_progress_steps[made_progress] = 0
         self.no_progress_steps[~made_progress] += 1
-
-        # 超过阈值 → 提前截断
-        stagnant_truncated = self.no_progress_steps >= self.max_no_progress
-        truncated = torch.logical_or(truncated, stagnant_truncated)
-        '''just for debugging'''
-        if truncated.any():
-            print(f"[Early Stop] {stagnant_truncated.sum().item()} envs stopped due to no progress.")
-
-        # 更新 last_coverage
         self.last_coverage = coverage_ratio
+        info['no_progress_steps'] = self.no_progress_steps.cpu().numpy()
+        info['coverage'] = coverage_ratio.mean().item()
 
         return obs, reward, terminated, truncated, info
 
