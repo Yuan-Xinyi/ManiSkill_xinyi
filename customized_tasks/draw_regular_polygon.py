@@ -20,7 +20,7 @@ class DrawRegularPolygonEnv(BaseDrawShapeEnv):
         Return polygon points as (NUM_POINTS, 3).
         Vertices are equally spaced on a circle of radius self.RADIUS.
         """
-        self.NUM_POINTS = 80
+        self.NUM_POINTS = 50
         points_per_edge = self.NUM_POINTS // self.num_edges
 
         # 顶点角度
@@ -55,24 +55,24 @@ class DrawRegularPolygonEnv(BaseDrawShapeEnv):
 
 
 # ---------------- 注册几个常用环境 ----------------
-@register_env("DrawTriangle-denseR", max_episode_steps=300)
+@register_env("DrawTriangle-denseR", max_episode_steps=1000)
 class DrawTriangleEnv(DrawRegularPolygonEnv):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, num_edges=3, **kwargs)
 
 # eight edges
-@register_env("DrawOctagon-denseR", max_episode_steps=300)
+@register_env("DrawOctagon-denseR", max_episode_steps=1000)
 class DrawOctagonEnv(DrawRegularPolygonEnv):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, num_edges=8, **kwargs)
 
 
-@register_env("DrawHexadecagon-denseR", max_episode_steps=300)  # 16 边形
+@register_env("DrawHexadecagon-denseR", max_episode_steps=1000)  # 16 边形
 class DrawHexadecagonEnv(DrawRegularPolygonEnv):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, num_edges=16, **kwargs)
 
-@register_env("DrawDodecagon-denseR", max_episode_steps=300)  # 12 边形
+@register_env("DrawDodecagon-denseR", max_episode_steps=1000)  # 12 边形
 class DrawDodecagonEnv(DrawRegularPolygonEnv):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, num_edges=12, **kwargs)

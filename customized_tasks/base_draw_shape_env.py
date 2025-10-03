@@ -50,27 +50,27 @@ class CurriculumScheduler:
         """Return parameters for current curriculum level"""
         if self.curr_level == 0:
             return dict(sigma=0.05, threshold=0.05,
-                        w_shape=1.0, w_cover=0.3, w_progress=0.0,
+                        w_shape=0.5, w_cover=0.3, w_progress=0.0,
                         w_cont=0.0, w_back=0.0)
         elif self.curr_level == 1:
             return dict(sigma=0.04, threshold=0.045,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=0.5, w_cover=0.4, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         elif self.curr_level == 2:
             return dict(sigma=0.03, threshold=0.040,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=0.4, w_cover=0.5, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         elif self.curr_level == 3:
             return dict(sigma=0.02, threshold=0.035,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=0.4, w_cover=0.6, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         elif self.curr_level == 4:
             return dict(sigma=0.015, threshold=0.03,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=0.3, w_cover=0.7, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
         else:
             return dict(sigma=0.01, threshold=0.03,
-                        w_shape=1.0, w_cover=0.5, w_progress=0.002,
+                        w_shape=0.3, w_cover=0.8, w_progress=0.002,
                         w_cont=0.3, w_back=0.001)
 
 
@@ -96,6 +96,11 @@ class BaseDrawShapeEnv(BaseEnv):
         self.qpos_history = None
         self.qvel_history = None
         self.history_ptr = None
+
+        # --- initialize early stop variables BEFORE calling super() ---
+        self.no_progress_steps = None
+        self.last_coverage = None
+        self.max_no_progress = 20
 
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
@@ -206,6 +211,13 @@ class BaseDrawShapeEnv(BaseEnv):
             self.qpos_history = torch.zeros((self.num_envs, self.history_len, nq), device=self.device)
             self.qvel_history = torch.zeros((self.num_envs, self.history_len, nq), device=self.device)
             self.history_ptr = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        if self.no_progress_steps is None:
+            self.no_progress_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        if self.last_coverage is None:
+            self.last_coverage = torch.zeros(self.num_envs, device=self.device)
+
+        self.no_progress_steps[env_idx] = 0
+        self.last_coverage[env_idx] = 0
 
         # 每次 reset 清零指定 env 的历史
         self.qpos_history[env_idx] = 0
@@ -230,8 +242,8 @@ class BaseDrawShapeEnv(BaseEnv):
         qpos = self.agent.robot.get_qpos()  # (num_envs, nq)
         lower = self.agent.robot.qlimits[0, :, 0]  # (num_envs, nq)
         upper = self.agent.robot.qlimits[0, :, 1]  # (num_envs, nq)
-        # add 10% noise to initial qpos within joint limits
-        noise = 0.05 * (upper - lower) * torch.randn_like(qpos, device=self.device)
+        # add 3% noise to initial qpos within joint limits
+        noise = 0.03 * (upper - lower) * torch.randn_like(qpos, device=self.device)
         qpos_rand = torch.clamp(qpos + noise, lower, upper)
         self.agent.robot.set_qpos(qpos_rand)
 
@@ -269,9 +281,26 @@ class BaseDrawShapeEnv(BaseEnv):
         qvel = self.agent.robot.get_qvel().clone().detach()
         self._update_history(qpos, qvel)
 
-        # proceed one simulation step
         obs, reward, terminated, truncated, info = super().step(action)
+
+        # ---- Early stop check ----
+        coverage_ratio = self.ref_dist.float().mean(dim=1)  # 当前覆盖率 (num_envs,)
+        made_progress = coverage_ratio > self.last_coverage + 1e-6
+        self.no_progress_steps[made_progress] = 0
+        self.no_progress_steps[~made_progress] += 1
+
+        # 超过阈值 → 提前截断
+        stagnant_truncated = self.no_progress_steps >= self.max_no_progress
+        truncated = torch.logical_or(truncated, stagnant_truncated)
+        '''just for debugging'''
+        if truncated.any():
+            print(f"[Early Stop] {stagnant_truncated.sum().item()} envs stopped due to no progress.")
+
+        # 更新 last_coverage
+        self.last_coverage = coverage_ratio
+
         return obs, reward, terminated, truncated, info
+
 
     def _update_history(self, qpos, qvel):
         """
@@ -290,7 +319,6 @@ class BaseDrawShapeEnv(BaseEnv):
         obs = dict(
             qpos_history=qpos_hist_flat,
             qvel_history=qvel_hist_flat,
-            tcp_pose=self.agent.tcp.pose.raw_pose,
         )
         return obs
 
