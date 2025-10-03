@@ -48,33 +48,31 @@ class CurriculumScheduler:
 
     def get_params(self):
         """Return parameters for current curriculum level"""
-        if self.curr_level == 0:
-            return dict(sigma=0.05, threshold=0.05,
-                        w_shape=0.5, w_cover=0.3, w_progress=0.0,
-                        w_cont=0.0, w_back=0.0)
-        elif self.curr_level == 1:
-            return dict(sigma=0.04, threshold=0.045,
-                        w_shape=0.5, w_cover=0.4, w_progress=0.002,
-                        w_cont=0.3, w_back=0.001)
-        elif self.curr_level == 2:
-            return dict(sigma=0.03, threshold=0.040,
-                        w_shape=0.4, w_cover=0.5, w_progress=0.002,
-                        w_cont=0.3, w_back=0.001)
-        elif self.curr_level == 3:
-            return dict(sigma=0.02, threshold=0.035,
-                        w_shape=0.4, w_cover=0.6, w_progress=0.002,
-                        w_cont=0.3, w_back=0.001)
-        elif self.curr_level == 4:
-            return dict(sigma=0.015, threshold=0.03,
-                        w_shape=0.3, w_cover=0.7, w_progress=0.002,
-                        w_cont=0.3, w_back=0.001)
-        else:
-            return dict(sigma=0.01, threshold=0.03,
-                        w_shape=0.3, w_cover=0.8, w_progress=0.002,
-                        w_cont=0.3, w_back=0.001)
-        # return dict(sigma=0.05, threshold=0.03,
-        #             w_shape=0.3, w_cover=0.8, w_progress=0.002,
-        #             w_cont=0.3, w_back=0.001)
+        # if self.curr_level == 0:
+        #     return dict(sigma=0.05, threshold=0.05,
+        #                 w_shape=0.5, w_cover=0.3, w_progress=0.0,
+        #                 w_cont=0.0, w_back=0.0)
+        # elif self.curr_level == 1:
+        #     return dict(sigma=0.04, threshold=0.045,
+        #                 w_shape=0.5, w_cover=0.4, w_progress=0.002,
+        #                 w_cont=0.3, w_back=0.001)
+        # elif self.curr_level == 2:
+        #     return dict(sigma=0.03, threshold=0.040,
+        #                 w_shape=0.4, w_cover=0.5, w_progress=0.002,
+        #                 w_cont=0.3, w_back=0.001)
+        # elif self.curr_level == 3:
+        #     return dict(sigma=0.02, threshold=0.035,
+        #                 w_shape=0.4, w_cover=0.6, w_progress=0.002,
+        #                 w_cont=0.3, w_back=0.001)
+        # elif self.curr_level == 4:
+        #     return dict(sigma=0.015, threshold=0.03,
+        #                 w_shape=0.3, w_cover=0.7, w_progress=0.002,
+        #                 w_cont=0.3, w_back=0.001)
+        # else:
+        #     return dict(sigma=0.01, threshold=0.03,
+        #                 w_shape=0.3, w_cover=0.8, w_progress=0.002,
+        #                 w_cont=0.3, w_back=0.001)
+        return dict(sigma=0.05, threshold=0.03, w_shape=0.3, w_cover=0.8)
 
 
 # ---------------- Environment ----------------
@@ -103,7 +101,6 @@ class BaseDrawShapeEnv(BaseEnv):
         # --- initialize early stop variables BEFORE calling super() ---
         self.no_progress_steps = None
         self.last_coverage = None
-        self.max_no_progress = 20
 
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
@@ -139,8 +136,6 @@ class BaseDrawShapeEnv(BaseEnv):
         pose = sapien_utils.look_at(eye=[0.3, 0, 0.8], target=[0, 0, 0.1])
         return CameraConfig("render_camera", pose=pose,
                             width=1280, height=960, fov=1.2, near=0.01, far=100)
-
-
 
     @property
     def _default_sensor_configs(self):
@@ -333,65 +328,34 @@ class BaseDrawShapeEnv(BaseEnv):
         brush_xy = brush_pos[:, :2]
         brush_z = brush_pos[:, 2]
 
-        # shape reward
+        '''# shape reward'''
         dist = torch.cdist(brush_xy.unsqueeze(1), self.shape_points)
         min_dist, min_idx = dist.min(dim=2)
         min_dist = min_dist.squeeze(-1)
         min_idx = min_idx.squeeze(-1)
-
         ## this is the soft boundary to avoid suddenly 0 shape reward
         z_factor = torch.exp(- ((brush_z - self.CANVAS_THICKNESS) ** 2) / (2 * (0.02 ** 2)))
         shape_reward = w_shape * torch.exp(- (min_dist ** 2) / (2 * sigma ** 2)) * z_factor
 
-        # coverage reward
+        '''# coverage reward'''
         near_goal = dist.squeeze(1) < threshold
         new_cover = torch.logical_and(near_goal, ~self.ref_dist)
         # cover_reward = (w_cover * new_cover.float().sum(dim=1))
         cover_reward = w_cover * new_cover.float().sum(dim=1) / self.NUM_POINTS
         self.ref_dist = torch.logical_or(self.ref_dist, near_goal)
 
-        # progress reward + back penalty
-        if not hasattr(self, "last_progress"):
-            self.last_progress = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-
-        progress = min_idx
-        progress_delta = (progress - self.last_progress)
-        forward = torch.clamp(progress_delta, min=0)
-        backward = torch.clamp(-progress_delta, min=0)
-
-        progress_reward = w_progress * forward.float()
-        back_penalty = - w_back * backward.float()
-
-        self.last_progress = progress
-
-        # coverage ratio
-        coverage_ratio = self.ref_dist.float().mean(dim=1)
-        coverage_bonus = 0.5 * coverage_ratio
-
-        # continuity reward
-        cont_reward = torch.zeros_like(reward)
-        if self.draw_step > 1:
-            prev_dot = self.dots[self.draw_step - 2].pose.p[:, :2]
-            curr_dot = brush_xy
-            dot_dist = torch.norm(curr_dot - prev_dot, dim=1)
-            cont_reward = w_cont * torch.exp(-50 * (dot_dist - 0.5 * self.DOT_THICKNESS) ** 2)
-
-        # action penalty
+        '''# action penalty'''
         action_penalty = torch.zeros_like(reward)
         if action is not None:
             action_penalty = -0.01 * torch.norm(action, dim=1)
 
-        # final reward
-        reward = shape_reward + cover_reward + progress_reward + back_penalty + coverage_bonus + cont_reward + action_penalty
+        '''# final reward'''
+        reward = shape_reward + cover_reward + action_penalty
 
         # --- logging info for wandb ---
         if info is not None:
             info["shape_reward"] = shape_reward.mean().item()
             info["cover_reward"] = cover_reward.mean().item()
-            info["progress_reward"] = progress_reward.mean().item()
-            info["back_penalty"] = back_penalty.mean().item()
-            info["coverage_bonus"] = coverage_bonus.mean().item()
-            info["continuity"] = cont_reward.mean().item()
             info["action_penalty"] = action_penalty.mean().item()
             info["curriculum_level"] = self.scheduler.curr_level
 
