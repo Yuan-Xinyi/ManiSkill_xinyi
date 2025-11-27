@@ -62,7 +62,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 10000000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1024
     """the number of parallel environments"""
@@ -203,14 +203,10 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # ---------------customized tasks---------------
-    if args.env_id == "DrawCircle-denseR":
-        from customized_tasks import draw_circle_denseR
-    elif args.env_id == "DrawTriangle-denseR":
-        from customized_tasks import draw_triangle_denseR
-    elif args.env_id == "DrawOctagon-denseR" or args.env_id == "DrawTriangle-denseR" or args.env_id == "DrawHexadecagon-denseR":
-        from customized_tasks import draw_regular_polygon
+    if args.env_id == "DrawStraight-denseR":
+        from customized_tasks import draw_straight
     else:
-        pass
+        raise NotImplementedError(f"Customized task for env_id {args.env_id} is not implemented.")
 
     # env setup
     env_kwargs = dict(obs_mode="state", render_mode="rgb_array", sim_backend="physx_cuda")
