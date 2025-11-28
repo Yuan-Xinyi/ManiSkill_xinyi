@@ -72,7 +72,7 @@ class CurriculumScheduler:
         #     return dict(sigma=0.01, threshold=0.03,
         #                 w_shape=0.3, w_cover=0.8, w_progress=0.002,
         #                 w_cont=0.3, w_back=0.001)
-        return dict(sigma=0.05, threshold=0.03, w_shape=0.3, w_cover=0.8)
+        return dict(sigma=0.05, threshold=0.03, w_shape=0.3, w_cover=0.8, w_progress=0.002, w_cont=0.3, w_back=0.001)
 
 
 # ---------------- Environment ----------------

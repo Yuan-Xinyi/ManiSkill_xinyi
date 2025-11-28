@@ -62,7 +62,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 10000000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-4
+    learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1024
     """the number of parallel environments"""
@@ -203,8 +203,10 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # ---------------customized tasks---------------
-    if args.env_id == "DrawStraight-denseR":
+    if args.env_id == "DrawStraightLine":
         from customized_tasks import draw_straight
+    elif args.env_id == "DrawCircle-denseR":
+        from customized_tasks import draw_circle_denseR
     else:
         raise NotImplementedError(f"Customized task for env_id {args.env_id} is not implemented.")
 
@@ -274,6 +276,8 @@ if __name__ == "__main__":
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     eval_obs, _ = eval_envs.reset(seed=args.seed)
+    # next_obs, _ = envs.reset()
+    # eval_obs, _ = eval_envs.reset()
     next_done = torch.zeros(args.num_envs, device=device)
     print(f"####")
     print(f"args.num_iterations={args.num_iterations} args.num_envs={args.num_envs} args.num_eval_envs={args.num_eval_envs}")
