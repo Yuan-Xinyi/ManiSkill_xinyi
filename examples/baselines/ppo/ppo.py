@@ -208,7 +208,7 @@ if __name__ == "__main__":
     elif args.env_id == "DrawCircle-denseR":
         from customized_tasks import draw_circle_denseR
     else:
-        raise NotImplementedError(f"Customized task for env_id {args.env_id} is not implemented.")
+        print(f"Customized task for env_id {args.env_id} is not implemented.")
 
     # env setup
     env_kwargs = dict(obs_mode="state", render_mode="rgb_array", sim_backend="physx_cuda")
