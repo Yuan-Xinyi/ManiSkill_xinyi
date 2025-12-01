@@ -138,6 +138,9 @@ class DrawStraightLineEnv(BaseEnv):
         reached_start = start_dist < 0.02
         reached_goal = goal_dist < 0.02
         success = reached_start & reached_goal
+        print('start_dist, goal_dist', start_dist.mean().item(), goal_dist.mean().item())
+        if reached_start.any():
+            print(f"Reached start: {reached_start.float().mean().item():.3f}")
 
         return {
             "reached_start": reached_start,
@@ -174,14 +177,9 @@ class DrawStraightLineEnv(BaseEnv):
 
         reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
         reward = reach_start_reward.clone()
-
-        # before touching start → only reaching reward
-        if (~self.has_touched_start).any():
-            idx = (~self.has_touched_start)
-            reward[idx] = reach_start_reward[idx]
         
         # after touching start → fixed reward 4.0
-        reward[self.has_touched_start] = 4.0
+        reward[self.has_touched_start] = 2.0 + reach_start_reward[self.has_touched_start]
 
         # ----- approach goal -----
         dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
