@@ -156,7 +156,7 @@ class DrawStraightLineEnv(BaseEnv):
                 lock_y=True,
                 lock_z=False,
             )
-            self.start.set_pose(Pose.create_from_pq(p=xyz.clone(), q=qs))
+            self.start_site.set_pose(Pose.create_from_pq(p=xyz.clone(), q=qs))
 
             xyz[:, :2] = goal_xy
             qs = randomization.random_quaternions(
@@ -165,29 +165,27 @@ class DrawStraightLineEnv(BaseEnv):
                 lock_y=True,
                 lock_z=False,
             )
-            self.goal.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            self.goal_site.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            tcp = self.agent.tcp.pose.p              # (num_envs, 3)
+            self.prev_tcp = tcp.clone()
 
-    # def _get_info(self, info: dict):
-    #     info = super()._get_info(info)
-    #     info.update(self.evaluate())   # 每步加入 evaluate() 的输出
-    #     return info
 
 
     def evaluate(self):
         tcp = self.agent.tcp.pose.p          # (num_envs, 3)
 
         # distance to start
-        start_pos = self.start.pose.p        # (num_envs, 3)
+        start_pos = self.start_site.pose.p        # (num_envs, 3)
         start_dist = torch.linalg.norm(tcp - start_pos, dim=1)
 
-        # distance to goal
-        goal_pos = self.goal.pose.p          # (num_envs, 3)
+        # distance to.goal_site
+        goal_pos = self.goal_site.pose.p          # (num_envs, 3)
         goal_dist = torch.linalg.norm(tcp - goal_pos, dim=1)
 
         reached_start = start_dist < 0.02
         reached_goal = goal_dist < 0.02
 
-        # must reach start first, then reach goal
+        # must reach start first, then reach.goal_site
         success = reached_start & reached_goal
 
         return {
@@ -201,11 +199,11 @@ class DrawStraightLineEnv(BaseEnv):
         obs = dict(tcp_pose=self.agent.tcp.pose.raw_pose)
         if "state" in self.obs_mode:
             obs.update(
-                start_pose=self.start.pose.raw_pose,
-                goal_pose=self.goal.pose.raw_pose,
-                tcp_to_start_pos=self.start.pose.p - self.agent.tcp.pose.p,
-                tcp_to_goal_pos=self.goal.pose.p - self.agent.tcp.pose.p,
-                start_to_goal_pos=self.goal.pose.p - self.start.pose.p,
+                start_pose=self.start_site.pose.raw_pose,
+                goal_pose=self.goal_site.pose.raw_pose,
+                tcp_to_start_pos=self.start_site.pose.p - self.agent.tcp.pose.p,
+                tcp_to_goal_pos=self.goal_site.pose.p - self.agent.tcp.pose.p,
+                start_to_goal_pos=self.goal_site.pose.p - self.start_site.pose.p,
             )
         return obs
 
@@ -215,7 +213,7 @@ class DrawStraightLineEnv(BaseEnv):
         # ------------------------------------------------------
         # 1) reach start  (对应 StackCube 的 reaching reward)
         # ------------------------------------------------------
-        start_pos = self.start.pose.p
+        start_pos = self.start_site.pose.p
         dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
         reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
 
@@ -224,12 +222,13 @@ class DrawStraightLineEnv(BaseEnv):
         # 未到达 start：直接返回
         not_reached_start = ~info["reached_start"]
         if not_reached_start.any():
+            self.prev_tcp = tcp.clone()
             return reward
 
         # ------------------------------------------------------
-        # 2) approach goal (对应 StackCube 的 place_reward)
+        # 2) approach.goal_site (对应 StackCube 的 place_reward)
         # ------------------------------------------------------
-        goal_pos = self.goal.pose.p
+        goal_pos = self.goal_site.pose.p
         dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
         approach_reward = 1 - torch.tanh(5 * dist_to_goal)
 
