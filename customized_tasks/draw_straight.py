@@ -138,9 +138,9 @@ class DrawStraightLineEnv(BaseEnv):
         reached_start = start_dist < 0.02
         reached_goal = goal_dist < 0.02
         success = reached_start & reached_goal
-        print('start_dist, goal_dist', start_dist.mean().item(), goal_dist.mean().item())
-        if reached_start.any():
-            print(f"Reached start: {reached_start.float().mean().item():.3f}")
+        # print('start_dist, goal_dist', start_dist.mean().item(), goal_dist.mean().item())
+        # if reached_start.any():
+        #     print(f"Reached start: {reached_start.float().mean().item():.3f}")
 
         return {
             "reached_start": reached_start,
@@ -171,45 +171,69 @@ class DrawStraightLineEnv(BaseEnv):
         start_pos = self.start_site.pose.p
         goal_pos = self.goal_site.pose.p
 
-        # ----- reach start -----
+        # -----------------------------------------
+        # 1) reach start
+        # -----------------------------------------
         dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
+
+        # 状态保持：一旦触碰过，就永远保持 True
         self.has_touched_start |= (dist_to_start < 0.02)
 
+        # reach start reward
         reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
+
+        # 初始奖励
         reward = reach_start_reward.clone()
-        
-        # after touching start → fixed reward 4.0
+
+        # 当 touches_start=True 时奖励变高（推动 robot 稳定停一下）
         reward[self.has_touched_start] = 2.0 + reach_start_reward[self.has_touched_start]
 
-        # ----- approach goal -----
+
+        # ==========================================================
+        # 2) approach & move to goal (only when has_touched_start=True)
+        # ==========================================================
+        mask = self.has_touched_start.float()
+
+        # ----- approach: shaped reward -----
         dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
         approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))
-        reward += self.has_touched_start.float() * approach_reward
+        reward += mask * approach_reward
 
-        # ----- forward movement (3D, unit direction) -----
+        # ----- distance reduction reward (强吸引力) -----
+        dist_to_goal_prev = torch.linalg.norm(self.prev_tcp - goal_pos, dim=1)
+        dist_reduction = dist_to_goal_prev - dist_to_goal     # 越大越好
+        dist_reduction_reward = torch.clamp(dist_reduction, min=0.0) * 10.0
+        reward += mask * dist_reduction_reward
+
+        # ----- forward movement in desired direction -----
         move = tcp - self.prev_tcp
 
-        dir_start = start_pos - tcp
-        dir_goal = goal_pos - tcp
+        dir_start = (start_pos - tcp)
+        dir_goal  = (goal_pos  - tcp)
         dir_start = dir_start / (torch.norm(dir_start, dim=1, keepdim=True) + 1e-6)
         dir_goal  = dir_goal  / (torch.norm(dir_goal,  dim=1, keepdim=True) + 1e-6)
 
+        # 未触碰 start 前使用 dir_start，之后用 dir_goal
         desired_dir = dir_start.clone()
-        mask = self.has_touched_start
-        if mask.any():
-            desired_dir[mask] = dir_goal[mask]
+        desired_dir[self.has_touched_start] = dir_goal[self.has_touched_start]
 
         proj = torch.sum(move * desired_dir, dim=1)
         forward_reward = torch.clamp(proj, min=0.0)
-        reward += forward_reward * 5.0
+        reward += mask * forward_reward * 20.0  # 加强权重
+
+        # ----- near goal bonus -----
+        close_bonus = (dist_to_goal < 0.05).float() * 3.0
+        reward += mask * close_bonus
 
         # ----- success -----
         success = self.has_touched_start & (dist_to_goal < 0.02)
         reward[success] = 8.0
 
-        # ----- update state -----
+        # 更新 prev_tcp
         self.prev_tcp = tcp.clone()
+
         return reward
+
 
     def compute_normalized_dense_reward(self, obs, action, info):
         return self.compute_dense_reward(obs, action, info) / 8.0
