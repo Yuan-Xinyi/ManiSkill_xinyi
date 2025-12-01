@@ -22,9 +22,9 @@ from mani_skill.utils.building import actors
 @register_env("DrawStraightLine-v1", max_episode_steps=300)
 class DrawStraightLineEnv(BaseEnv):
     """
-    Task:
-      Robot must draw as long and as straight a line as possible.
-      The start of the line is explicitly shown as a sphere.
+    Robot draws a straight line:
+    Step 1 — reach start sphere
+    Step 2 — move toward goal sphere
     """
 
     MAX_DOTS = 300
@@ -36,16 +36,15 @@ class DrawStraightLineEnv(BaseEnv):
     SUPPORTED_ROBOTS = ["panda_stick"]
     agent: PandaStick
 
-    def __init__(
-        self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, **kwargs
-    ):
+    def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, **kwargs):
         self.robot_init_qpos_noise = robot_init_qpos_noise
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
+    # ----------------------------------------------------------
+    # Simulation + Cameras
+    # ----------------------------------------------------------
     @property
     def _default_sim_config(self):
-        # we set contact_offset to a small value as we are not expecting to make any contacts really apart from the brush hitting the canvas too hard.
-        # We set solver iterations very low as this environment is not doing a ton of manipulation (the brush is attached to the robot after all)
         return SimConfig(
             sim_freq=100,
             control_freq=20,
@@ -56,38 +55,6 @@ class DrawStraightLineEnv(BaseEnv):
             ),
         )
 
-    @property
-    def _default_sensor_configs(self):
-        pose = sapien_utils.look_at(eye=[0.3, 0, 0.8], target=[0, 0, 0.1])
-        return [
-            CameraConfig(
-                "base_camera",
-                pose=pose,
-                width=320,
-                height=240,
-                fov=1.2,
-                near=0.01,
-                far=100,
-            )
-        ]
-
-    @property
-    def _default_human_render_camera_configs(self):
-        pose = sapien_utils.look_at(eye=[0.3, 0, 0.8], target=[0, 0, 0.1])
-        return CameraConfig(
-            "render_camera",
-            pose=pose,
-            width=1280,
-            height=960,
-            fov=1.2,
-            near=0.01,
-            far=100,
-        )
-
-    def _load_agent(self, options: dict):
-        super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
-    
-    
     @property
     def _default_sensor_configs(self):
         pose = sapien_utils.look_at(eye=[0.3, 0, 0.6], target=[-0.1, 0, 0.1])
@@ -101,34 +68,26 @@ class DrawStraightLineEnv(BaseEnv):
     def _load_agent(self, options: dict):
         super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
 
+    # ----------------------------------------------------------
+    # Scene
+    # ----------------------------------------------------------
     def _load_scene(self, options: dict):
-        self.cube_half_size = common.to_tensor([0.02] * 3, device=self.device)
-        self.table_scene = TableSceneBuilder(
-            env=self, robot_init_qpos_noise=self.robot_init_qpos_noise
-        )
+        self.table_scene = TableSceneBuilder(env=self, robot_init_qpos_noise=self.robot_init_qpos_noise)
         self.table_scene.build()
+
         self.start_site = actors.build_sphere(
-            self.scene,
-            radius=self.goal_thresh,
-            color=[1, 0, 0, 1],
-            name="start_site",
-            body_type="kinematic",
-            add_collision=False,
-            initial_pose=sapien.Pose(),
+            self.scene, radius=self.goal_thresh, color=[1, 0, 0, 1],
+            name="start_site", body_type="kinematic",
+            add_collision=False, initial_pose=sapien.Pose(),
         )
         self._hidden_objects.append(self.start_site)
-        
+
         self.goal_site = actors.build_sphere(
-            self.scene,
-            radius=self.goal_thresh,
-            color=[0, 1, 0, 1],
-            name="goal_site",
-            body_type="kinematic",
-            add_collision=False,
-            initial_pose=sapien.Pose(),
+            self.scene, radius=self.goal_thresh, color=[0, 1, 0, 1],
+            name="goal_site", body_type="kinematic",
+            add_collision=False, initial_pose=sapien.Pose(),
         )
         self._hidden_objects.append(self.goal_site)
-        
 
     # ----------------------------------------------------------
     # Reset
@@ -138,54 +97,46 @@ class DrawStraightLineEnv(BaseEnv):
             b = len(env_idx)
             self.table_scene.initialize(env_idx)
 
-            xyz = torch.zeros((b, 3))
-            xyz[:, 2] = 0.02
+            # ----- random start + goal -----
             xy = torch.rand((b, 2)) * 0.2 - 0.1
             region = [[-0.1, -0.2], [0.1, 0.2]]
-            sampler = randomization.UniformPlacementSampler(
-                bounds=region, batch_size=b, device=self.device
-            )
+            sampler = randomization.UniformPlacementSampler(bounds=region, batch_size=b, device=self.device)
             radius = torch.linalg.norm(torch.tensor([0.02, 0.02])) + 0.001
+
             start_xy = xy + sampler.sample(radius, 100)
             goal_xy = xy + sampler.sample(radius, 100, verbose=False)
 
+            xyz = torch.zeros((b, 3))
+            xyz[:, 2] = 0.02
+
             xyz[:, :2] = start_xy
-            qs = randomization.random_quaternions(
-                b,
-                lock_x=True,
-                lock_y=True,
-                lock_z=False,
-            )
+            qs = randomization.random_quaternions(b, lock_x=True, lock_y=True)
             self.start_site.set_pose(Pose.create_from_pq(p=xyz.clone(), q=qs))
 
             xyz[:, :2] = goal_xy
-            qs = randomization.random_quaternions(
-                b,
-                lock_x=True,
-                lock_y=True,
-                lock_z=False,
-            )
+            qs = randomization.random_quaternions(b, lock_x=True, lock_y=True)
             self.goal_site.set_pose(Pose.create_from_pq(p=xyz, q=qs))
-            tcp = self.agent.tcp.pose.p              # (num_envs, 3)
+
+            # ----- reset state flags -----
+            self.has_touched_start = torch.zeros(b, dtype=torch.bool, device=self.device)
+
+            # ----- init prev tcp -----
+            tcp = self.agent.tcp.pose.p
             self.prev_tcp = tcp.clone()
 
-
-
+    # ----------------------------------------------------------
+    # Evaluate (NO history here)
+    # ----------------------------------------------------------
     def evaluate(self):
-        tcp = self.agent.tcp.pose.p          # (num_envs, 3)
+        tcp = self.agent.tcp.pose.p
+        start_pos = self.start_site.pose.p
+        goal_pos = self.goal_site.pose.p
 
-        # distance to start
-        start_pos = self.start_site.pose.p        # (num_envs, 3)
         start_dist = torch.linalg.norm(tcp - start_pos, dim=1)
-
-        # distance to.goal_site
-        goal_pos = self.goal_site.pose.p          # (num_envs, 3)
         goal_dist = torch.linalg.norm(tcp - goal_pos, dim=1)
 
         reached_start = start_dist < 0.02
         reached_goal = goal_dist < 0.02
-
-        # must reach start first, then reach.goal_site
         success = reached_start & reached_goal
 
         return {
@@ -194,7 +145,9 @@ class DrawStraightLineEnv(BaseEnv):
             "success": success,
         }
 
-
+    # ----------------------------------------------------------
+    # Observations
+    # ----------------------------------------------------------
     def _get_obs_extra(self, info: dict):
         obs = dict(tcp_pose=self.agent.tcp.pose.raw_pose)
         if "state" in self.obs_mode:
@@ -207,54 +160,58 @@ class DrawStraightLineEnv(BaseEnv):
             )
         return obs
 
+    # ----------------------------------------------------------
+    # Reward
+    # ----------------------------------------------------------
     def compute_dense_reward(self, obs: Any, action: torch.Tensor, info: dict):
         tcp = self.agent.tcp.pose.p
-
-        # ------------------------------------------------------
-        # 1) reach start  (对应 StackCube 的 reaching reward)
-        # ------------------------------------------------------
         start_pos = self.start_site.pose.p
-        dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
-        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
+        goal_pos = self.goal_site.pose.p
 
+        # ----- reach start -----
+        dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
+        self.has_touched_start |= (dist_to_start < 0.02)
+
+        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
         reward = reach_start_reward.clone()
 
-        # 未到达 start：直接返回
-        not_reached_start = ~info["reached_start"]
-        if not_reached_start.any():
-            self.prev_tcp = tcp.clone()
-            return reward
+        # before touching start → only reaching reward
+        if (~self.has_touched_start).any():
+            idx = (~self.has_touched_start)
+            reward[idx] = reach_start_reward[idx]
+        
+        # after touching start → fixed reward 4.0
+        reward[self.has_touched_start] = 4.0
 
-        # ------------------------------------------------------
-        # 2) approach.goal_site (对应 StackCube 的 place_reward)
-        # ------------------------------------------------------
-        goal_pos = self.goal_site.pose.p
+        # ----- approach goal -----
         dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
-        approach_reward = 1 - torch.tanh(5 * dist_to_goal)
+        approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))
+        reward += self.has_touched_start.float() * approach_reward
 
-        reward[info["reached_start"]] = (4 + approach_reward)[info["reached_start"]]
-
-        # ------------------------------------------------------
-        # 3) forward movement bonus
-        # ------------------------------------------------------
+        # ----- forward movement (3D, unit direction) -----
         move = tcp - self.prev_tcp
-        goal_dir = goal_pos - tcp
-        proj = torch.sum(move[:, :2] * goal_dir[:, :2], dim=1)
+
+        dir_start = start_pos - tcp
+        dir_goal = goal_pos - tcp
+        dir_start = dir_start / (torch.norm(dir_start, dim=1, keepdim=True) + 1e-6)
+        dir_goal  = dir_goal  / (torch.norm(dir_goal,  dim=1, keepdim=True) + 1e-6)
+
+        desired_dir = dir_start.clone()
+        mask = self.has_touched_start
+        if mask.any():
+            desired_dir[mask] = dir_goal[mask]
+
+        proj = torch.sum(move * desired_dir, dim=1)
         forward_reward = torch.clamp(proj, min=0.0)
+        reward += forward_reward * 5.0
 
-        reward[info["reached_start"]] += forward_reward[info["reached_start"]] * 5.0
+        # ----- success -----
+        success = self.has_touched_start & (dist_to_goal < 0.02)
+        reward[success] = 8.0
 
-        # ------------------------------------------------------
-        # 4) success
-        # ------------------------------------------------------
-        reward[info["success"]] = 10.0
-
+        # ----- update state -----
         self.prev_tcp = tcp.clone()
         return reward
 
-
-
-    def compute_normalized_dense_reward(
-        self, obs: Any, action: torch.Tensor, info: dict
-    ):
-        return self.compute_dense_reward(obs=obs, action=action, info=info) / 10
+    def compute_normalized_dense_reward(self, obs, action, info):
+        return self.compute_dense_reward(obs, action, info) / 8.0
