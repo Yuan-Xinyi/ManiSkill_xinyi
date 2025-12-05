@@ -19,7 +19,7 @@ from mani_skill.utils import common, sapien_utils
 from mani_skill.utils.building import actors
 
 
-@register_env("DrawStraightLine", max_episode_steps=100)
+@register_env("DrawStraightLine", max_episode_steps=50)
 class DrawStraightLineEnv(BaseEnv):
     """
     Robot draws a straight line:
@@ -27,7 +27,7 @@ class DrawStraightLineEnv(BaseEnv):
     Step 2 — move toward goal sphere
     """
 
-    MAX_DOTS = 100
+    MAX_DOTS = 50
     DOT_THICKNESS = 0.003
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
@@ -104,7 +104,8 @@ class DrawStraightLineEnv(BaseEnv):
             xy = torch.rand((b, 2)) * 0.2 - 0.1
             region = [[-0.1, -0.2], [0.1, 0.2]]
             sampler = randomization.UniformPlacementSampler(bounds=region, batch_size=b, device=self.device)
-            radius = torch.linalg.norm(torch.tensor([0.02, 0.02])) + 0.001
+            # radius = torch.linalg.norm(torch.tensor([0.02, 0.02])) + 0.001
+            radius = 0.01
 
             start_xy = xy + sampler.sample(radius, 100)
             goal_xy = xy + sampler.sample(radius, 100, verbose=False)
@@ -145,6 +146,8 @@ class DrawStraightLineEnv(BaseEnv):
         success = self.has_touched_start & reached_goal
 
         return {
+            "reached_start": self.has_touched_start,
+            "reached_goal": reached_goal,
             "success": success,
         }
 
@@ -214,11 +217,11 @@ class DrawStraightLineEnv(BaseEnv):
 
         # ----- success -----
         success = self.has_touched_start & (dist_to_goal < 0.01)
-        reward[success] = 8.0
+        reward[success] = 15.0
 
         self.prev_tcp = tcp.clone()
         return reward
 
 
     def compute_normalized_dense_reward(self, obs, action, info):
-        return self.compute_dense_reward(obs, action, info) / 8.0
+        return self.compute_dense_reward(obs, action, info) / 15.0
