@@ -19,7 +19,7 @@ from mani_skill.utils import common, sapien_utils
 from mani_skill.utils.building import actors
 
 
-@register_env("DrawStraightLine", max_episode_steps=300)
+@register_env("DrawStraightLine", max_episode_steps=100)
 class DrawStraightLineEnv(BaseEnv):
     """
     Robot draws a straight line:
@@ -27,12 +27,12 @@ class DrawStraightLineEnv(BaseEnv):
     Step 2 — move toward goal sphere
     """
 
-    MAX_DOTS = 300
+    MAX_DOTS = 100
     DOT_THICKNESS = 0.003
     CANVAS_THICKNESS = 0.02
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
-    goal_thresh = 0.025
+    goal_thresh = 0.01
     
     
     SUPPORTED_ROBOTS = ["panda_stick"]
@@ -141,7 +141,7 @@ class DrawStraightLineEnv(BaseEnv):
         tcp = self.agent.tcp.pose.p
         goal_pos = self.goal_site.pose.p
         goal_dist = torch.linalg.norm(tcp - goal_pos, dim=1)
-        reached_goal = goal_dist < 0.02
+        reached_goal = goal_dist < 0.01
         success = self.has_touched_start & reached_goal
 
         return {
@@ -175,7 +175,7 @@ class DrawStraightLineEnv(BaseEnv):
         # 1) reach start
         # -----------------------------------------
         dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
-        self.has_touched_start |= (dist_to_start < 0.02)
+        self.has_touched_start |= (dist_to_start < 0.01)
 
         reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
         reward = reach_start_reward.clone()
@@ -213,7 +213,7 @@ class DrawStraightLineEnv(BaseEnv):
         reward += mask * close_bonus
 
         # ----- success -----
-        success = self.has_touched_start & (dist_to_goal < 0.02)
+        success = self.has_touched_start & (dist_to_goal < 0.01)
         reward[success] = 8.0
 
         self.prev_tcp = tcp.clone()
