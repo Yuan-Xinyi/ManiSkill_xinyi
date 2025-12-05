@@ -33,6 +33,7 @@ class DrawStraightLineEnv(BaseEnv):
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
     goal_thresh = 0.01
+    radius = 0.01
     
     
     SUPPORTED_ROBOTS = ["panda_stick"]
@@ -105,7 +106,7 @@ class DrawStraightLineEnv(BaseEnv):
             region = [[-0.1, -0.2], [0.1, 0.2]]
             sampler = randomization.UniformPlacementSampler(bounds=region, batch_size=b, device=self.device)
             # radius = torch.linalg.norm(torch.tensor([0.02, 0.02])) + 0.001
-            radius = 0.01
+            radius = self.radius
 
             start_xy = xy + sampler.sample(radius, 100)
             goal_xy = xy + sampler.sample(radius, 100, verbose=False)
@@ -174,6 +175,10 @@ class DrawStraightLineEnv(BaseEnv):
         start_pos = self.start_site.pose.p
         goal_pos = self.goal_site.pose.p
 
+        qvel = self.agent.robot.get_qvel() 
+        rot_penalty = torch.norm(qvel, dim=1)
+        reward = -0.1 * rot_penalty
+
         # -----------------------------------------
         # 1) reach start
         # -----------------------------------------
@@ -217,11 +222,11 @@ class DrawStraightLineEnv(BaseEnv):
 
         # ----- success -----
         success = self.has_touched_start & (dist_to_goal < 0.01)
-        reward[success] = 15.0
+        reward[success] = 20.0
 
         self.prev_tcp = tcp.clone()
         return reward
 
 
     def compute_normalized_dense_reward(self, obs, action, info):
-        return self.compute_dense_reward(obs, action, info) / 15.0
+        return self.compute_dense_reward(obs, action, info) / 20.0
