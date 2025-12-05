@@ -33,10 +33,13 @@ class DrawStraightLineEnv(BaseEnv):
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
     goal_thresh = 0.025
+    
+    
     SUPPORTED_ROBOTS = ["panda_stick"]
     agent: PandaStick
 
     def __init__(self, *args, robot_uids="panda_stick", robot_init_qpos_noise=0.02, **kwargs):
+        self.has_touched_start = None
         self.robot_init_qpos_noise = robot_init_qpos_noise
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
@@ -118,7 +121,14 @@ class DrawStraightLineEnv(BaseEnv):
             self.goal_site.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
             # ----- reset state flags -----
-            self.has_touched_start = torch.zeros(b, dtype=torch.bool, device=self.device)
+            # self.has_touched_start = torch.zeros(b, dtype=torch.bool, device=self.device)
+            # Initialize has_touched_start on first reset
+            if self.has_touched_start is None:
+                self.has_touched_start = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+            # Reset only selected environments
+            self.has_touched_start[env_idx] = False
+
 
             # ----- init prev tcp -----
             tcp = self.agent.tcp.pose.p
@@ -129,19 +139,12 @@ class DrawStraightLineEnv(BaseEnv):
     # ----------------------------------------------------------
     def evaluate(self):
         tcp = self.agent.tcp.pose.p
-        start_pos = self.start_site.pose.p
         goal_pos = self.goal_site.pose.p
-
-        start_dist = torch.linalg.norm(tcp - start_pos, dim=1)
         goal_dist = torch.linalg.norm(tcp - goal_pos, dim=1)
-
-        reached_start = start_dist < 0.02
         reached_goal = goal_dist < 0.02
-        success = reached_start & reached_goal
+        success = self.has_touched_start & reached_goal
 
         return {
-            "reached_start": reached_start,
-            "reached_goal": reached_goal,
             "success": success,
         }
 

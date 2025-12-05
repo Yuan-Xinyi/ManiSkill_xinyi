@@ -362,7 +362,7 @@ if __name__ == "__main__":
                 
                 # --- 新增打印平均 episode reward ---
                 avg_ep_reward = final_info["episode"]["reward"][done_mask].float().mean().item()
-                print(f"Iteration {iteration}, step {step}, avg_episode_reward = {avg_ep_reward:.4f}")
+                # print(f"Iteration {iteration}, step {step}, avg_episode_reward = {avg_ep_reward:.4f}")
 
                 with torch.no_grad():
                     final_values[step, torch.arange(args.num_envs, device=device)[done_mask]] = agent.get_value(infos["final_observation"][done_mask]).view(-1)
