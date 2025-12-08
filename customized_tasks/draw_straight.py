@@ -33,7 +33,7 @@ class DrawStraightLineEnv(BaseEnv):
     BRUSH_RADIUS = 0.01
     BRUSH_COLORS = [[0.8, 0.2, 0.2, 1]]
     goal_thresh = 0.02
-    radius = 0.1
+    radius = 0.05
     dist_thresh = 0.02
     
     SUPPORTED_ROBOTS = ["panda_stick"]
@@ -171,32 +171,62 @@ class DrawStraightLineEnv(BaseEnv):
     # Reward
     # ----------------------------------------------------------
     def compute_dense_reward(self, obs: Any, action: torch.Tensor, info: dict):
-        # distance to start point
-        tcp_to_start_dist = torch.linalg.norm(
-            self.start_site.pose.p - self.agent.tcp.pose.p, axis=1
-        )
-        self.has_touched_start |= (tcp_to_start_dist < self.dist_thresh)
-        reaching_reward = 1 - torch.tanh(5 * tcp_to_start_dist)
-        reward = reaching_reward
+        tcp = self.agent.tcp.pose.p
+        start_pos = self.start_site.pose.p
+        goal_pos = self.goal_site.pose.p
 
-        reatched_start = self.has_touched_start
-        reward += reatched_start
+        qvel = self.agent.robot.get_qvel() 
+        rot_penalty = torch.norm(qvel, dim=1)
+        reward = -0.1 * rot_penalty
 
-        # distance to goal point
-        tcp_to_goal_dist = torch.linalg.norm(
-            self.goal_site.pose.p - self.agent.tcp.pose.p, axis=1
-        )
-        self.has_touched_goal |= (tcp_to_goal_dist < self.dist_thresh)
-        goal_reward = 1 - torch.tanh(5 * tcp_to_goal_dist)
-        reward += goal_reward * self.has_touched_start
-        
-        # velocity penalty
-        qvel = self.agent.robot.get_qvel()[..., :-2]
-        static_reward = 1 - torch.tanh(5 * torch.linalg.norm(qvel, axis=1))
-        reward += static_reward * self.has_touched_goal
+        # -----------------------------------------
+        # 1) reach start
+        # -----------------------------------------
+        dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
+        self.has_touched_start |= (dist_to_start < self.dist_thresh)
 
-        reward[info["success"]] = 5
+        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
+        reward = reach_start_reward.clone()
+        reward[self.has_touched_start] = 2.0 + reach_start_reward[self.has_touched_start]
+
+
+        # ==========================================================
+        # 2) approach & move to goal (only when has_touched_start=True)
+        # ==========================================================
+        mask = self.has_touched_start.float()
+        dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
+        approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))
+        reward += mask * approach_reward
+
+        dist_to_goal_prev = torch.linalg.norm(self.prev_tcp - goal_pos, dim=1)
+        dist_reduction = dist_to_goal_prev - dist_to_goal   
+        dist_reduction_reward = torch.clamp(dist_reduction, min=0.0) * 10.0
+        reward += mask * dist_reduction_reward
+
+        move = tcp - self.prev_tcp
+        dir_start = (start_pos - tcp)
+        dir_goal  = (goal_pos  - tcp)
+        dir_start = dir_start / (torch.norm(dir_start, dim=1, keepdim=True) + 1e-6)
+        dir_goal  = dir_goal  / (torch.norm(dir_goal,  dim=1, keepdim=True) + 1e-6)
+
+        desired_dir = dir_start.clone()
+        desired_dir[self.has_touched_start] = dir_goal[self.has_touched_start]
+
+        proj = torch.sum(move * desired_dir, dim=1)
+        forward_reward = torch.clamp(proj, min=0.0)
+        reward += mask * forward_reward * 20.0 
+
+        # ----- near goal bonus -----
+        close_bonus = (dist_to_goal < 0.05).float() * 3.0
+        reward += mask * close_bonus
+
+        # ----- success -----
+        success = self.has_touched_start & (dist_to_goal < self.dist_thresh)
+        reward[success] = 20.0
+
+        self.prev_tcp = tcp.clone()
         return reward
+
 
 
     def compute_normalized_dense_reward(self, obs, action, info):

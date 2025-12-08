@@ -37,7 +37,7 @@ class RadiusScheduler:
 
     def get_radius(self):
         return self.radius
-radius_scheduler = RadiusScheduler(initial=0.1, min_radius=0.1, max_radius=0.6)
+radius_scheduler = RadiusScheduler(initial=0.05, min_radius=0.05, max_radius=0.6)
 
 
 @dataclass
