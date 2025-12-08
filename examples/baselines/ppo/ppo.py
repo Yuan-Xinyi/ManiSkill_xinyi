@@ -22,7 +22,7 @@ from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 class RadiusScheduler:
-    def __init__(self, initial=0.01, min_radius=0.005, max_radius=0.20, up_step=0.005, down_step=0.003):
+    def __init__(self, initial=0.1, min_radius=0.1, max_radius=0.6, up_step=0.05, down_step=0.05):
         self.radius = initial
         self.min_radius = min_radius
         self.max_radius = max_radius
@@ -37,7 +37,7 @@ class RadiusScheduler:
 
     def get_radius(self):
         return self.radius
-radius_scheduler = RadiusScheduler(initial=0.01, min_radius=0.01, max_radius=0.10)
+radius_scheduler = RadiusScheduler(initial=0.1, min_radius=0.1, max_radius=0.6)
 
 
 @dataclass
@@ -321,13 +321,10 @@ if __name__ == "__main__":
             #====================================================================
             if "success_once" in eval_metrics:
                 eval_success_once_mean = torch.stack(eval_metrics["success_once"]).float().mean().item()
-
                 radius_scheduler.update(eval_success_once_mean)
                 new_radius = radius_scheduler.get_radius()
-
-                envs._env.radius = new_radius
-                eval_envs._env.radius = new_radius
-
+                envs.base_env.radius = new_radius
+                eval_envs.base_env.radius = new_radius
                 print(f"[Curriculum] Updated radius → {new_radius:.4f}")
             #====================================================================
 
