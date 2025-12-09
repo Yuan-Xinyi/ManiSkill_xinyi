@@ -270,41 +270,75 @@ if __name__ == "__main__":
                 sort_keys.append((-s, m, i))
             
             sort_keys.sort()
-            top_8_indices = [x[2] for x in sort_keys[:8]]
-            print(f"Top 8 indices for radius {radius:.2f}: {top_8_indices}")
             
-            # Re-run top 8 environments for video recording
-            print(f"Re-running top 8 environments for video recording...")
-            os.makedirs(video_folder, exist_ok=True)
+            # Filter: only take successful ones first
+            successful_indices = [x for x in sort_keys if x[0] == -1]
             
-            for rank, env_idx in enumerate(top_8_indices):
-                current_seed = args.seed + env_idx
+            if len(successful_indices) >= 8:
+                top_indices = [x[2] for x in successful_indices[:8]]
+            else:
+                # If less than 8 successful, take all successful ones
+                # And if you ONLY want successful ones, just stop here.
+                # If you want to fill up to 8 with best failures, keep the original logic.
+                # User said: "成功的不够八个就成功几个画几个" -> Only draw successful ones if < 8?
+                # Or "Draw whatever is successful, up to 8".
+                # Let's assume: Only draw successful ones.
+                top_indices = [x[2] for x in successful_indices]
                 
-                # Create single env
-                rec_env = gym.make(args.env_id, num_envs=1, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
-                if isinstance(rec_env.action_space, gym.spaces.Dict):
-                    rec_env = FlattenActionSpaceWrapper(rec_env)
+                # If NO success at all? Maybe draw the best failure just to see what's wrong?
+                # If user strictly wants "successful ones", and count is 0, then we draw nothing.
+                # But usually it's good to see at least one failure if everything fails.
+                if len(top_indices) == 0:
+                     # Fallback: draw top 3 best failures to debug
+                     top_indices = [x[2] for x in sort_keys[:3]]
+            
+            print(f"Top indices for radius {radius:.2f} (Success count: {len(successful_indices)}): {top_indices}")
+            
+            # Re-run top environments for video recording
+            if len(top_indices) > 0:
+                print(f"Re-running {len(top_indices)} environments for video recording...")
+                os.makedirs(video_folder, exist_ok=True)
                 
-                rec_env = RecordEpisode(rec_env, output_dir=video_folder, save_trajectory=False, max_steps_per_video=args.num_eval_steps, video_fps=30)
-                rec_env = ManiSkillVectorEnv(rec_env, 1, ignore_terminations=not args.eval_partial_reset, record_metrics=True)
-                
-                rec_env.base_env.radius = radius
-                
-                obs, _ = rec_env.reset(seed=current_seed)
-                
-                for _ in range(args.num_eval_steps):
-                    with torch.no_grad():
-                        action = agent.get_action(obs, deterministic=True)
-                        obs, _, _, _, _ = rec_env.step(action)
-                
-                rec_env.close()
-                
-                # Rename the video file
-                # RecordEpisode usually saves as 0.mp4 for the first episode
-                generated_video = os.path.join(video_folder, "0.mp4")
-                if os.path.exists(generated_video):
-                    target_name = os.path.join(video_folder, f"rank{rank}_env{env_idx}.mp4")
-                    shutil.move(generated_video, target_name)
+                for rank, env_idx in enumerate(top_indices):
+                    current_seed = args.seed + env_idx
+                    
+                    # Create single env
+                    rec_env = gym.make(args.env_id, num_envs=1, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
+                    if isinstance(rec_env.action_space, gym.spaces.Dict):
+                        rec_env = FlattenActionSpaceWrapper(rec_env)
+                    
+                    rec_env = RecordEpisode(rec_env, output_dir=video_folder, save_trajectory=False, max_steps_per_video=args.num_eval_steps, video_fps=30)
+                    rec_env = ManiSkillVectorEnv(rec_env, 1, ignore_terminations=not args.eval_partial_reset, record_metrics=True)
+                    
+                    rec_env.base_env.radius = radius
+                    
+                    obs, _ = rec_env.reset(seed=current_seed)
+                    
+                    for _ in range(args.num_eval_steps):
+                        with torch.no_grad():
+                            action = agent.get_action(obs, deterministic=True)
+                            obs, _, _, _, infos = rec_env.step(action)
+                            
+                            # Check success and break if successful
+                            if "final_info" in infos:
+                                # Vector env returns final_info for auto-reset envs
+                                # But here we have num_envs=1 and maybe not auto-resetting if we didn't set it?
+                                # Actually ManiSkillVectorEnv usually auto-resets.
+                                # Let's check the success in info or base_env
+                                pass
+                            
+                            # Check success directly from base_env for the single env
+                            if rec_env.base_env.evaluate()['success'].item():
+                                break
+                    
+                    rec_env.close()
+                    
+                    # Rename the video file
+                    # RecordEpisode usually saves as 0.mp4 for the first episode
+                    generated_video = os.path.join(video_folder, "0.mp4")
+                    if os.path.exists(generated_video):
+                        target_name = os.path.join(video_folder, f"rank{rank}_env{env_idx}.mp4")
+                        shutil.move(generated_video, target_name)
         
         eval_envs.close()
 
