@@ -202,7 +202,11 @@ if __name__ == "__main__":
         agent.eval()
         eval_obs, _ = eval_envs.reset(seed=args.seed)
         
+        # Save initial state for replay
+        initial_states = eval_envs.base_env.get_state().clone()
+        
         tcp_history = []
+        action_history = [] # Store actions for replay
         eval_metrics = defaultdict(list)
         num_episodes = 0
         
@@ -215,6 +219,7 @@ if __name__ == "__main__":
         for _ in range(args.num_eval_steps):
             with torch.no_grad():
                 action = agent.get_action(eval_obs, deterministic=True)
+                action_history.append(action.clone()) # Save action
                 eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(action)
                 
                 # Update success_once
@@ -265,14 +270,17 @@ if __name__ == "__main__":
         if args.capture_video:
             sort_keys = []
             for i in range(args.num_eval_envs):
-                s = 1 if success_per_env[i] else 0
+                s = 1 if success_per_env[i].item() else 0
                 m = mse_per_env[i].item()
                 sort_keys.append((-s, m, i))
             
             sort_keys.sort()
             
+            print(f"Debug: Top 5 sort_keys: {sort_keys[:5]}")
+            
             # Filter: only take successful ones first
             successful_indices = [x for x in sort_keys if x[0] == -1]
+            print(f"Debug: Found {len(successful_indices)} successful environments.")
             
             if len(successful_indices) >= 8:
                 top_indices = [x[2] for x in successful_indices[:8]]
@@ -299,6 +307,9 @@ if __name__ == "__main__":
                 print(f"Re-running {len(top_indices)} environments for video recording...")
                 os.makedirs(video_folder, exist_ok=True)
                 
+                # Stack actions for easier indexing: (T, N, ActionDim)
+                saved_actions = torch.stack(action_history)
+                
                 for rank, env_idx in enumerate(top_indices):
                     current_seed = args.seed + env_idx
                     
@@ -312,20 +323,20 @@ if __name__ == "__main__":
                     
                     rec_env.base_env.radius = radius
                     
-                    obs, _ = rec_env.reset(seed=current_seed)
+                    # Reset and restore state
+                    rec_env.reset(seed=current_seed)
                     
-                    for _ in range(args.num_eval_steps):
+                    # Extract state for this specific env
+                    # initial_states is (N, state_dim)
+                    # We need to pass (1, state_dim) to set_state
+                    env_state = initial_states[env_idx].unsqueeze(0)
+                    rec_env.base_env.set_state(env_state)
+                    
+                    for t in range(args.num_eval_steps):
                         with torch.no_grad():
-                            action = agent.get_action(obs, deterministic=True)
-                            obs, _, _, _, infos = rec_env.step(action)
-                            
-                            # Check success and break if successful
-                            if "final_info" in infos:
-                                # Vector env returns final_info for auto-reset envs
-                                # But here we have num_envs=1 and maybe not auto-resetting if we didn't set it?
-                                # Actually ManiSkillVectorEnv usually auto-resets.
-                                # Let's check the success in info or base_env
-                                pass
+                            # Replay action
+                            action = saved_actions[t, env_idx].unsqueeze(0)
+                            _, _, _, _, infos = rec_env.step(action)
                             
                             # Check success directly from base_env for the single env
                             if rec_env.base_env.evaluate()['success'].item():
