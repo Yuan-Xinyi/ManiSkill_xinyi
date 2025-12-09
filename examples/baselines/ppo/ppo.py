@@ -30,7 +30,7 @@ class RadiusScheduler:
         self.down_step = down_step
 
     def update(self, success_rate):
-        if success_rate > 0.6:
+        if success_rate > 0.8:
             self.radius = min(self.max_radius, self.radius + self.up_step)
         elif success_rate < 0.3:
             self.radius = max(self.min_radius, self.radius - self.down_step)

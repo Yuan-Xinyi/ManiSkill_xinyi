@@ -104,7 +104,10 @@ class DrawStraightLineEnv(BaseEnv):
 
             # ----- random start + goal -----
             xy = torch.rand((b, 2)) * 0.2 - 0.1   # task center
-            radius = self.radius
+            
+            # Sample radius uniformly from [0.05, self.radius]
+            min_radius = 0.05
+            radius = torch.rand((b, 1), device=self.device) * (self.radius - min_radius) + min_radius
 
             theta = torch.rand((b, 1), device=self.device) * 2 * math.pi
 

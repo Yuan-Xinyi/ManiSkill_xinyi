@@ -206,6 +206,9 @@ if __name__ == "__main__":
         eval_metrics = defaultdict(list)
         num_episodes = 0
         
+        # Track success once
+        success_once = torch.zeros(args.num_eval_envs, dtype=torch.bool, device=device)
+        
         start_pos = eval_envs.base_env.start_site.pose.p.clone()
         goal_pos = eval_envs.base_env.goal_site.pose.p.clone()
         
@@ -213,6 +216,10 @@ if __name__ == "__main__":
             with torch.no_grad():
                 action = agent.get_action(eval_obs, deterministic=True)
                 eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(action)
+                
+                # Update success_once
+                current_success = eval_envs.base_env.evaluate()['success']
+                success_once |= current_success
                 
                 tcp_pos = eval_envs.base_env.agent.tcp.pose.p.clone()
                 tcp_history.append(tcp_pos)
@@ -239,8 +246,8 @@ if __name__ == "__main__":
             
         mse_per_env /= args.num_eval_steps
         
-        eval_results = eval_envs.base_env.evaluate()
-        success_per_env = eval_results['success']
+        # Use success_once for sorting
+        success_per_env = success_once
         
         print(f"Evaluated {args.num_eval_steps * args.num_eval_envs} steps")
         radius_results = {}
