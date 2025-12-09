@@ -30,7 +30,7 @@ class RadiusScheduler:
         self.down_step = down_step
 
     def update(self, success_rate):
-        if success_rate > 0.5:
+        if success_rate > 0.6:
             self.radius = min(self.max_radius, self.radius + self.up_step)
         elif success_rate < 0.3:
             self.radius = max(self.min_radius, self.radius - self.down_step)
@@ -74,7 +74,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 1024
     """the number of parallel environments"""
-    num_eval_envs: int = 8
+    num_eval_envs: int = 32
     """the number of parallel evaluation environments"""
     partial_reset: bool = True
     """whether to let parallel environments reset upon termination instead of truncation"""
@@ -320,8 +320,8 @@ if __name__ == "__main__":
 
             #====================================================================
             if "success_once" in eval_metrics:
-                eval_success_once_mean = torch.stack(eval_metrics["success_once"]).float().mean().item()
-                radius_scheduler.update(eval_success_once_mean)
+                eval_success_mean = torch.stack(eval_metrics["success_once"]).float().mean().item()
+                radius_scheduler.update(eval_success_mean)
                 new_radius = radius_scheduler.get_radius()
                 envs.base_env.radius = new_radius
                 eval_envs.base_env.radius = new_radius
