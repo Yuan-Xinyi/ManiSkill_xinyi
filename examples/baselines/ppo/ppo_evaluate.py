@@ -14,6 +14,7 @@ import torch.optim as optim
 import tyro
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 # ManiSkill specific imports
 import mani_skill.envs
