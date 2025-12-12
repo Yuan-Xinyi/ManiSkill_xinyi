@@ -49,7 +49,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
     """the id of the environment"""
-    num_eval_envs: int = 1024
+    num_eval_envs: int = 2048
     """the number of parallel evaluation environments"""
     eval_partial_reset: bool = False
     """whether to let parallel evaluation environments reset upon termination instead of truncation"""
@@ -177,7 +177,7 @@ if __name__ == "__main__":
     )
     logger = Logger(log_wandb=args.track, tensorboard=writer)
 
-    radii = np.arange(0.1, 0.6 + 0.001, 0.05)
+    radii = np.arange(0.1, 0.8 + 0.001, 0.05)
     all_results = {}
 
     for radius in radii:

@@ -184,7 +184,7 @@ if __name__ == "__main__":
     agent = Agent(dummy_env).to(device)
     dummy_env.close()
 
-    radii = np.arange(0.1, 0.6 + 0.001, 0.05)
+    radii = np.arange(0.1, 0.8 + 0.001, 0.05)
     
     # Open output file
     output_path = args.output_file
