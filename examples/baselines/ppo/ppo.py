@@ -20,6 +20,7 @@ from mani_skill.utils import gym_utils
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
+from utils.gmm_sampler import GMMSampler
 
 class RadiusScheduler:
     def __init__(self, initial=0.1, min_radius=0.1, max_radius=0.6, up_step=0.05, down_step=0.05):
@@ -56,7 +57,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
@@ -74,7 +75,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 1024
     """the number of parallel environments"""
-    num_eval_envs: int = 32
+    num_eval_envs: int = 1024
     """the number of parallel evaluation environments"""
     partial_reset: bool = True
     """whether to let parallel environments reset upon termination instead of truncation"""
@@ -294,12 +295,21 @@ if __name__ == "__main__":
     if args.checkpoint:
         agent.load_state_dict(torch.load(args.checkpoint))
 
+    # GMM Setup
+    gmm_sampler = GMMSampler(n_components=10, random_state=args.seed)
+    success_buffer = [] # List to store [Cx, Cy, Theta]
+    gmm_fit_interval = 50 # Fit GMM every N iterations
+    gmm_min_samples = 2000 # Minimum samples to start fitting
+    gmm_beta = 0.0 # Initial mixture probability
+    gmm_alpha = 1.0 # Initial covariance narrowing factor
+
     for iteration in range(1, args.num_iterations + 1):
         print(f"Epoch: {iteration}, global_step={global_step}")
         final_values = torch.zeros((args.num_steps, args.num_envs), device=device)
         agent.eval()
         if iteration % args.eval_freq == 1:
             print("Evaluating")
+            print(f"[GMM] Current success buffer size: {len(success_buffer)}")
             eval_obs, _ = eval_envs.reset()
             eval_metrics = defaultdict(list)
             num_episodes = 0
@@ -311,6 +321,60 @@ if __name__ == "__main__":
                         num_episodes += mask.sum()
                         for k, v in eval_infos["final_info"]["episode"].items():
                             eval_metrics[k].append(v)
+                    
+                    # === GMM Collection in Evaluation ===
+                    # Collect successful samples from evaluation to boost buffer
+                    # ONLY Check final_info to avoid duplicates per episode
+                    eval_samples = []
+                    
+                    if "final_info" in eval_infos:
+                        final_info = eval_infos["final_info"]
+                        
+                        # Case 1: Vectorized Dict (ManiSkill style)
+                        if isinstance(final_info, dict):
+                            if "success" in final_info:
+                                success_mask = final_info["success"]
+                                if success_mask.any():
+                                    try:
+                                        if "success_start_pos" in final_info and "success_goal_pos" in final_info:
+                                            succ_indices = torch.nonzero(success_mask).squeeze(-1)
+                                            s_pos = final_info["success_start_pos"][succ_indices, :2].cpu().numpy()
+                                            g_pos = final_info["success_goal_pos"][succ_indices, :2].cpu().numpy()
+                                            
+                                            for i in range(len(s_pos)):
+                                                sx, sy = s_pos[i]
+                                                gx, gy = g_pos[i]
+                                                cx, cy = (sx+gx)/2, (sy+gy)/2
+                                                ox, oy = sx-cx, sy-cy
+                                                theta = np.arctan2(oy, ox)
+                                                radius = np.sqrt(ox**2 + oy**2)
+                                                eval_samples.append([cx, cy, theta, radius])
+                                    except Exception as e:
+                                        print(f"[GMM Eval Error] {e}")
+
+                        # Case 2: List of Dicts (Standard Gym style)
+                        elif isinstance(final_info, list):
+                            for info_item in final_info:
+                                if info_item and isinstance(info_item, dict) and info_item.get("success", False):
+                                    try:
+                                        if "success_start_pos" in info_item and "success_goal_pos" in info_item:
+                                            s = info_item["success_start_pos"]
+                                            g = info_item["success_goal_pos"]
+                                            if isinstance(s, torch.Tensor): s = s.cpu().numpy()
+                                            if isinstance(g, torch.Tensor): g = g.cpu().numpy()
+                                            sx, sy = s[:2]
+                                            gx, gy = g[:2]
+                                            cx, cy = (sx+gx)/2, (sy+gy)/2
+                                            ox, oy = sx-cx, sy-cy
+                                            theta = np.arctan2(oy, ox)
+                                            radius = np.sqrt(ox**2 + oy**2)
+                                            eval_samples.append([cx, cy, theta, radius])
+                                    except: pass
+                    
+                    if eval_samples:
+                        success_buffer.extend(eval_samples)
+                        print(f"[GMM Eval] Collected {len(eval_samples)} samples. Total: {len(success_buffer)}")
+                    # ====================================
             print(f"Evaluated {args.num_eval_steps * args.num_eval_envs} steps resulting in {num_episodes} episodes")
             for k, v in eval_metrics.items():
                 mean = torch.stack(v).float().mean()
@@ -326,13 +390,71 @@ if __name__ == "__main__":
                 envs.base_env.radius = new_radius
                 eval_envs.base_env.radius = new_radius
                 print(f"[Curriculum] Updated radius → {new_radius:.4f}")
+
+                # Update GMM Beta based on success rate
+                if eval_success_mean >= 0.8:
+                    # Success > 0.8: Mastery phase.
+                    # Increase difficulty (Radius up, handled by scheduler) AND Reduce assistance (Beta down)
+                    # We want the agent to be robust, not just relying on GMM.
+                    gmm_beta = max(0.0, gmm_beta - 0.02)
+                elif eval_success_mean <= 0.3:
+                    # Success < 0.3: Failure phase.
+                    # Decrease difficulty (Radius down) AND Reduce assistance (Beta down) to encourage re-exploration.
+                    # Exception: If radius is large, keep some assistance to prevent collapse.
+                    if new_radius > 0.3:
+                        gmm_beta = max(0.5, gmm_beta - 0.02)
+                    else:
+                        gmm_beta = max(0.0, gmm_beta - 0.02)
+                else:
+                    # Success 0.3 ~ 0.8: Struggle phase.
+                    # Difficulty stays same. Increase assistance (Beta up) slightly to help breakthrough.
+                    gmm_beta = min(1.0, gmm_beta + 0.05)
+                
+                # Update GMM Alpha based on radius (Linear decay: 1.0 -> 0.1 as radius 0.05 -> 0.6)
+                # alpha = 1.0 - k * (radius - min_radius)
+                # Let's map radius [0.05, 0.6] to alpha [1.0, 0.1]
+                # 0.1 = 1.0 - k * (0.6 - 0.05) => k = 0.9 / 0.55 ~= 1.636
+                k_alpha = 1.636
+                gmm_alpha = max(0.1, 1.0 - k_alpha * (new_radius - 0.05))
+
+                # Sync parameters to env
+                envs.base_env.gmm_beta = gmm_beta
+                envs.base_env.gmm_alpha = gmm_alpha
+                
+                print(f"[GMM] Updated Beta: {gmm_beta:.2f}, Alpha: {gmm_alpha:.2f}")
+                if logger is not None:
+                    logger.add_scalar("gmm/beta", gmm_beta, global_step)
+                    logger.add_scalar("gmm/alpha", gmm_alpha, global_step)
             #====================================================================
 
             if args.evaluate:
                 break
+        
+        # Fit GMM periodically
+        if iteration % gmm_fit_interval == 0 and len(success_buffer) >= gmm_min_samples:
+            print(f"[GMM] Fitting GMM with {len(success_buffer)} samples...")
+            # Convert buffer to numpy array
+            data = np.array(success_buffer)
+            # Keep only recent samples if buffer grows too large (optional, e.g., last 100k)
+            if len(data) > 100000:
+                data = data[-100000:]
+                success_buffer = data.tolist()
+            
+            gmm_sampler.fit(data)
+            # Sync sampler to env
+            envs.base_env.gmm_sampler = gmm_sampler
+            print(f"[GMM] Fitted. Components: {gmm_sampler.n_components}")
+
         if args.save_model and iteration % args.eval_freq == 1:
             model_path = f"runs/{run_name}/ckpt_{iteration}.pt"
             torch.save(agent.state_dict(), model_path)
+            
+            # Save GMM model (Overwrite latest)
+            if gmm_sampler.is_fitted:
+                gmm_path = f"runs/{run_name}/latest_gmm.joblib"
+                gmm_sampler.save(gmm_path)
+                print(f"GMM model saved to {gmm_path}")
+            
             print(f"model saved to {model_path}")
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -355,6 +477,16 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(clip_action(action))
+            
+            # --- GMM Data Collection ---
+            # We need to handle both immediate success (if env doesn't reset) and final_info success (if env resets)
+            
+            # --- GMM Data Collection (TRAINING) ---
+            # DISABLED: We only collect from evaluation now to ensure high quality samples
+            # and avoid noise from exploration.
+            pass
+            # ---------------------------
+
             next_done = torch.logical_or(terminations, truncations).to(torch.float32)
             rewards[step] = reward.view(-1) * args.reward_scale
 

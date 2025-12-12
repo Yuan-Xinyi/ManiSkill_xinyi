@@ -43,6 +43,12 @@ class DrawStraightLineEnv(BaseEnv):
         self.has_touched_start = None
         self.has_touched_goal = None
         self.robot_init_qpos_noise = robot_init_qpos_noise
+        
+        # GMM Curriculum Parameters
+        self.gmm_sampler = None
+        self.gmm_beta = 0.0 # Mixture probability (0.0 = pure uniform, 1.0 = pure GMM)
+        self.gmm_alpha = 1.0 # Covariance narrowing factor
+        
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
     # ----------------------------------------------------------
@@ -102,23 +108,36 @@ class DrawStraightLineEnv(BaseEnv):
             b = len(env_idx)
             self.table_scene.initialize(env_idx)
 
-            # ----- random start + goal -----
-            xy = torch.rand((b, 2)) * 0.2 - 0.1   # task center
-            
-            # Sample radius uniformly from [0.05, self.radius]
-            evaluate = True
-            if evaluate:
-                radius = torch.full((b, 1), self.radius, device=self.device)
+            # GMM Sampling Logic
+            should_use_gmm = (self.gmm_sampler is not None) and \
+                             (self.gmm_sampler.is_fitted) and \
+                             (torch.rand(1).item() < self.gmm_beta)
+
+            if should_use_gmm:
+                # Mode: GMM Sampling
+                # Sample (b, 4) task vectors [Sx, Sy, Gx, Gy] conditioned on current radius
+                # We use self.radius (the current curriculum radius) as the condition
+                # This ensures we sample tasks with the correct difficulty but in "good" regions
+                task_vectors = self.gmm_sampler.sample(b, radius=self.radius, alpha=self.gmm_alpha, device=self.device)
+                start_xy = task_vectors[:, :2]
+                goal_xy  = task_vectors[:, 2:]
             else:
+                # Mode: Uniform Exploration (Original Logic)
+                # ----- random start + goal -----
+                xy = torch.rand((b, 2)) * 0.2 - 0.1   # task center
+                
+                # Sample radius uniformly from [0.05, self.radius]
+                # Note: In training we usually want range, in eval we might want fixed.
+                # Assuming this is mostly for training if GMM is involved.
                 min_radius = 0.05
                 radius = torch.rand((b, 1), device=self.device) * (self.radius - min_radius) + min_radius
 
-            theta = torch.rand((b, 1), device=self.device) * 2 * math.pi
+                theta = torch.rand((b, 1), device=self.device) * 2 * math.pi
 
-            offset = torch.cat([radius * torch.cos(theta),
-                                radius * torch.sin(theta)], dim=1)
-            start_xy = xy + offset
-            goal_xy  = xy - offset
+                offset = torch.cat([radius * torch.cos(theta),
+                                    radius * torch.sin(theta)], dim=1)
+                start_xy = xy + offset
+                goal_xy  = xy - offset
 
             xyz = torch.zeros((b, 3))
             xyz[:, 2] = 0.02
@@ -157,6 +176,8 @@ class DrawStraightLineEnv(BaseEnv):
             "has_reached_start": self.has_touched_start,
             "has_reached_goal": self.has_touched_goal,
             "success": success,
+            "success_start_pos": self.start_site.pose.p,
+            "success_goal_pos": self.goal_site.pose.p,
         }
 
     # ----------------------------------------------------------
