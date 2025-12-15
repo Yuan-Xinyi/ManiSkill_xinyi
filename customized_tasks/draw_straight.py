@@ -212,37 +212,21 @@ class DrawStraightLineEnv(BaseEnv):
         # -----------------------------------------
         dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
         self.has_touched_start |= (dist_to_start < self.dist_thresh)
-
-        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
-        reward = reach_start_reward.clone()
-        reward[self.has_touched_start] = 2.0 + reach_start_reward[self.has_touched_start]
-
-
-        # ==========================================================
-        # 2) approach & move to goal (only when has_touched_start=True)
-        # ==========================================================
         mask = self.has_touched_start.float()
+
+        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))  # range (0,4)
+        reward += reach_start_reward.clone()
+        reward[self.has_touched_start] =  4.0
+
+        # -----------------------------------------
+        # 2) approach & move to goal (only when has_touched_start=True)
+        # -----------------------------------------
         dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
-        approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))
+        approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))  # range (0,4)
         reward += mask * approach_reward
 
-        dist_to_goal_prev = torch.linalg.norm(self.prev_tcp - goal_pos, dim=1)
-        dist_reduction = dist_to_goal_prev - dist_to_goal   
-        dist_reduction_reward = torch.clamp(dist_reduction, min=0.0) * 10.0
-        reward += mask * dist_reduction_reward
-
-        move = tcp - self.prev_tcp
-        dir_start = (start_pos - tcp)
-        dir_goal  = (goal_pos  - tcp)
-        dir_start = dir_start / (torch.norm(dir_start, dim=1, keepdim=True) + 1e-6)
-        dir_goal  = dir_goal  / (torch.norm(dir_goal,  dim=1, keepdim=True) + 1e-6)
-
-        desired_dir = dir_start.clone()
-        desired_dir[self.has_touched_start] = dir_goal[self.has_touched_start]
-
-        proj = torch.sum(move * desired_dir, dim=1)
-        forward_reward = torch.clamp(proj, min=0.0)
-        reward += mask * forward_reward * 20.0 
+        # ----- movement along the line -----
+        
 
         # ----- near goal bonus -----
         close_bonus = (dist_to_goal < 0.05).float() * 3.0
