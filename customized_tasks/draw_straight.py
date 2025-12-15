@@ -226,7 +226,19 @@ class DrawStraightLineEnv(BaseEnv):
         reward += mask * approach_reward
 
         # ----- movement along the line -----
+        # Calculate deviation from the line segment [start_pos, goal_pos]
+        line_vec = goal_pos - start_pos
+        line_len_sq = (line_vec ** 2).sum(dim=1)
         
+        point_vec = tcp - start_pos
+        t = (point_vec * line_vec).sum(dim=1) / (line_len_sq + 1e-8)
+        t_clamped = torch.clamp(t, 0.0, 1.0)
+        
+        closest_point = start_pos + t_clamped.unsqueeze(1) * line_vec
+        deviation = torch.linalg.norm(tcp - closest_point, dim=1)
+
+        deviation_penalty = 5.0 * deviation
+        reward -= mask * deviation_penalty
 
         # ----- near goal bonus -----
         close_bonus = (dist_to_goal < 0.05).float() * 3.0
