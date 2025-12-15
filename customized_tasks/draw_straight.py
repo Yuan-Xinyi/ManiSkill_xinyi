@@ -42,6 +42,7 @@ class DrawStraightLineEnv(BaseEnv):
     def __init__(self, *args, robot_uids="panda_stick", robot_init_qpos_noise=0.02, **kwargs):
         self.has_touched_start = None
         self.has_touched_goal = None
+        self.max_deviation = None
         self.robot_init_qpos_noise = robot_init_qpos_noise
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
@@ -101,9 +102,23 @@ class DrawStraightLineEnv(BaseEnv):
         with torch.device(self.device):
             b = len(env_idx)
             self.table_scene.initialize(env_idx)
+            X_MIN = -0.42
+            X_MAX = 0.085
+            Y_MIN = -0.65
+            Y_MAX = 0.65
 
             # ----- random start + goal -----
-            xy = torch.rand((b, 2)) * 0.2 - 0.1   # task center
+            max_offset = self.radius
+            center_x_min = X_MIN + max_offset
+            center_x_max = X_MAX - max_offset
+            center_y_min = Y_MIN + max_offset
+            center_y_max = Y_MAX - max_offset
+            if center_x_max <= center_x_min and center_y_max <= center_y_min:
+                raise ValueError("The defined radius is too large for the table size.")
+
+            center_x = torch.rand((b, 1), device=self.device) * (center_x_max - center_x_min) + center_x_min
+            center_y = torch.rand((b, 1), device=self.device) * (center_y_max - center_y_min) + center_y_min
+            xy = torch.cat([center_x, center_y], dim=1)
             
             # Sample radius uniformly from [0.05, self.radius]
             evaluate = False
@@ -139,9 +154,10 @@ class DrawStraightLineEnv(BaseEnv):
                 self.has_touched_goal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             self.has_touched_goal[env_idx] = False
 
-            # ----- init prev tcp -----
-            tcp = self.agent.tcp.pose.p
-            self.prev_tcp = tcp.clone()
+            # ----- init customized variables -----
+            if self.max_deviation is None:
+                self.max_deviation = torch.zeros(self.num_envs, device=self.device)
+            self.max_deviation[env_idx] = 0
 
     # ----------------------------------------------------------
     # Evaluate (NO history here)
@@ -151,11 +167,13 @@ class DrawStraightLineEnv(BaseEnv):
         goal_pos = self.goal_site.pose.p
         goal_dist = torch.linalg.norm(tcp - goal_pos, dim=1)
         reached_goal = goal_dist < self.dist_thresh
-        success = self.has_touched_start & reached_goal
+        success = self.has_touched_start & reached_goal & (self.max_deviation < self.dist_thresh)
+        # print(f'max deviation: {self.max_deviation.cpu().numpy()}')
 
         return {
             "has_reached_start": self.has_touched_start,
             "has_reached_goal": self.has_touched_goal,
+            "max_deviation": self.max_deviation,
             "success": success,
         }
 
@@ -211,6 +229,8 @@ class DrawStraightLineEnv(BaseEnv):
         
         closest_point = start_pos + t_clamped.unsqueeze(1) * line_vec
         deviation = torch.linalg.norm(tcp - closest_point, dim=1)
+        update_deviation = (deviation > self.max_deviation) & self.has_touched_start
+        self.max_deviation[update_deviation] = deviation[update_deviation]
 
         deviation_penalty = 10.0 * deviation
         reward -= mask * deviation_penalty
@@ -220,13 +240,12 @@ class DrawStraightLineEnv(BaseEnv):
         # reward += mask * close_bonus
 
         # ----- success -----
-        success = self.has_touched_start & (dist_to_goal < self.dist_thresh)
+        success = self.has_touched_start & (dist_to_goal < self.dist_thresh) & (self.max_deviation < self.dist_thresh)
         reward[success] = 20.0
         qvel = self.agent.robot.get_qvel() 
         rot_penalty = torch.norm(qvel, dim=1)
         reward -= 0.1 * rot_penalty
         reward[success] -= rot_penalty[success]
-        self.prev_tcp = tcp.clone()
         return reward
 
     def compute_normalized_dense_reward(self, obs, action, info):

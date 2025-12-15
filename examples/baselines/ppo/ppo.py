@@ -37,7 +37,7 @@ class RadiusScheduler:
 
     def get_radius(self):
         return self.radius
-radius_scheduler = RadiusScheduler(initial=0.05, min_radius=0.05, max_radius=1.0)
+radius_scheduler = RadiusScheduler(initial=0.05, min_radius=0.05, max_radius=0.6)
 
 
 @dataclass
@@ -74,7 +74,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 1024
     """the number of parallel environments"""
-    num_eval_envs: int = 32
+    num_eval_envs: int = 64
     """the number of parallel evaluation environments"""
     partial_reset: bool = True
     """whether to let parallel environments reset upon termination instead of truncation"""

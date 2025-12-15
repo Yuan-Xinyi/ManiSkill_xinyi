@@ -189,10 +189,6 @@ if __name__ == "__main__":
         if isinstance(eval_envs.action_space, gym.spaces.Dict):
             eval_envs = FlattenActionSpaceWrapper(eval_envs)
         
-        # if args.capture_video:
-        #     print(f"Saving eval videos to {video_folder}")
-        #     eval_envs = RecordEpisode(eval_envs, output_dir=video_folder, save_trajectory=False, trajectory_name="trajectory", max_steps_per_video=args.num_eval_steps, video_fps=30)
-        
         eval_envs = ManiSkillVectorEnv(eval_envs, args.num_eval_envs, ignore_terminations=not args.eval_partial_reset, record_metrics=True)
         
         # Set radius
@@ -285,17 +281,8 @@ if __name__ == "__main__":
             if len(successful_indices) >= 8:
                 top_indices = [x[2] for x in successful_indices[:8]]
             else:
-                # If less than 8 successful, take all successful ones
-                # And if you ONLY want successful ones, just stop here.
-                # If you want to fill up to 8 with best failures, keep the original logic.
-                # User said: "成功的不够八个就成功几个画几个" -> Only draw successful ones if < 8?
-                # Or "Draw whatever is successful, up to 8".
-                # Let's assume: Only draw successful ones.
                 top_indices = [x[2] for x in successful_indices]
                 
-                # If NO success at all? Maybe draw the best failure just to see what's wrong?
-                # If user strictly wants "successful ones", and count is 0, then we draw nothing.
-                # But usually it's good to see at least one failure if everything fails.
                 if len(top_indices) == 0:
                      # Fallback: draw top 3 best failures to debug
                      top_indices = [x[2] for x in sort_keys[:3]]
@@ -326,9 +313,6 @@ if __name__ == "__main__":
                     # Reset and restore state
                     rec_env.reset(seed=current_seed)
                     
-                    # Extract state for this specific env
-                    # initial_states is (N, state_dim)
-                    # We need to pass (1, state_dim) to set_state
                     env_state = initial_states[env_idx].unsqueeze(0)
                     rec_env.base_env.set_state(env_state)
                     
@@ -343,9 +327,7 @@ if __name__ == "__main__":
                                 break
                     
                     rec_env.close()
-                    
-                    # Rename the video file
-                    # RecordEpisode usually saves as 0.mp4 for the first episode
+                
                     generated_video = os.path.join(video_folder, "0.mp4")
                     if os.path.exists(generated_video):
                         target_name = os.path.join(video_folder, f"rank{rank}_env{env_idx}.mp4")
