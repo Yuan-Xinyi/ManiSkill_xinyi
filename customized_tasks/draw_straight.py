@@ -106,7 +106,7 @@ class DrawStraightLineEnv(BaseEnv):
             xy = torch.rand((b, 2)) * 0.2 - 0.1   # task center
             
             # Sample radius uniformly from [0.05, self.radius]
-            evaluate = True
+            evaluate = False
             if evaluate:
                 radius = torch.full((b, 1), self.radius, device=self.device)
             else:
@@ -182,59 +182,52 @@ class DrawStraightLineEnv(BaseEnv):
         start_pos = self.start_site.pose.p
         goal_pos = self.goal_site.pose.p
 
-        qvel = self.agent.robot.get_qvel() 
-        rot_penalty = torch.norm(qvel, dim=1)
-        reward = -0.1 * rot_penalty
-
         # -----------------------------------------
         # 1) reach start
         # -----------------------------------------
         dist_to_start = torch.linalg.norm(tcp - start_pos, dim=1)
         self.has_touched_start |= (dist_to_start < self.dist_thresh)
-
-        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))
-        reward = reach_start_reward.clone()
-        reward[self.has_touched_start] = 2.0 + reach_start_reward[self.has_touched_start]
-
-
-        # ==========================================================
-        # 2) approach & move to goal (only when has_touched_start=True)
-        # ==========================================================
         mask = self.has_touched_start.float()
+
+        reach_start_reward = 2 * (1 - torch.tanh(5 * dist_to_start))  # range (0,4)
+        reward = reach_start_reward.clone()
+        reward[self.has_touched_start] =  4.0
+
+        # -----------------------------------------
+        # 2) approach & move to goal (only when has_touched_start=True)
+        # -----------------------------------------
         dist_to_goal = torch.linalg.norm(goal_pos - tcp, dim=1)
-        approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))
+        approach_reward = 2 * (1 - torch.tanh(5 * dist_to_goal))  # range (0,4)
         reward += mask * approach_reward
 
-        dist_to_goal_prev = torch.linalg.norm(self.prev_tcp - goal_pos, dim=1)
-        dist_reduction = dist_to_goal_prev - dist_to_goal   
-        dist_reduction_reward = torch.clamp(dist_reduction, min=0.0) * 10.0
-        reward += mask * dist_reduction_reward
+        # ----- movement along the line -----
+        # Calculate deviation from the line segment [start_pos, goal_pos]
+        line_vec = goal_pos - start_pos
+        line_len_sq = (line_vec ** 2).sum(dim=1)
+        
+        point_vec = tcp - start_pos
+        t = (point_vec * line_vec).sum(dim=1) / (line_len_sq + 1e-8)
+        t_clamped = torch.clamp(t, 0.0, 1.0)
+        
+        closest_point = start_pos + t_clamped.unsqueeze(1) * line_vec
+        deviation = torch.linalg.norm(tcp - closest_point, dim=1)
 
-        move = tcp - self.prev_tcp
-        dir_start = (start_pos - tcp)
-        dir_goal  = (goal_pos  - tcp)
-        dir_start = dir_start / (torch.norm(dir_start, dim=1, keepdim=True) + 1e-6)
-        dir_goal  = dir_goal  / (torch.norm(dir_goal,  dim=1, keepdim=True) + 1e-6)
+        deviation_penalty = 10.0 * deviation
+        reward -= mask * deviation_penalty
 
-        desired_dir = dir_start.clone()
-        desired_dir[self.has_touched_start] = dir_goal[self.has_touched_start]
-
-        proj = torch.sum(move * desired_dir, dim=1)
-        forward_reward = torch.clamp(proj, min=0.0)
-        reward += mask * forward_reward * 20.0 
-
-        # ----- near goal bonus -----
-        close_bonus = (dist_to_goal < 0.05).float() * 3.0
-        reward += mask * close_bonus
+        # # ----- near goal bonus -----
+        # close_bonus = (dist_to_goal < 0.05).float() * 3.0
+        # reward += mask * close_bonus
 
         # ----- success -----
         success = self.has_touched_start & (dist_to_goal < self.dist_thresh)
         reward[success] = 20.0
-
+        qvel = self.agent.robot.get_qvel() 
+        rot_penalty = torch.norm(qvel, dim=1)
+        reward -= 0.1 * rot_penalty
+        reward[success] -= rot_penalty[success]
         self.prev_tcp = tcp.clone()
         return reward
-
-
 
     def compute_normalized_dense_reward(self, obs, action, info):
         return self.compute_dense_reward(obs, action, info) / 5
