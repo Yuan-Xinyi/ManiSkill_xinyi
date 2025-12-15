@@ -102,8 +102,8 @@ class DrawStraightLineEnv(BaseEnv):
         with torch.device(self.device):
             b = len(env_idx)
             self.table_scene.initialize(env_idx)
-            X_MIN = -0.42
-            X_MAX = 0.085
+            X_MIN = -0.3
+            X_MAX = 0.0
             Y_MIN = -0.65
             Y_MAX = 0.65
 

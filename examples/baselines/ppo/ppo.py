@@ -22,7 +22,7 @@ from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 class RadiusScheduler:
-    def __init__(self, initial=0.1, min_radius=0.1, max_radius=0.6, up_step=0.05, down_step=0.05):
+    def __init__(self, initial=0.1, min_radius=0.1, max_radius=0.6, up_step=0.02, down_step=0.02):
         self.radius = initial
         self.min_radius = min_radius
         self.max_radius = max_radius
@@ -30,7 +30,7 @@ class RadiusScheduler:
         self.down_step = down_step
 
     def update(self, success_rate):
-        if success_rate > 0.5:
+        if success_rate > 0.7:
             self.radius = min(self.max_radius, self.radius + self.up_step)
         elif success_rate < 0.3:
             self.radius = max(self.min_radius, self.radius - self.down_step)
