@@ -44,6 +44,7 @@ class DrawStraightLineEnv(BaseEnv):
         self.has_touched_goal = None
         self.max_deviation = None
         self.robot_init_qpos_noise = robot_init_qpos_noise
+        self.fix_radius = False
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
     # ----------------------------------------------------------
@@ -121,8 +122,7 @@ class DrawStraightLineEnv(BaseEnv):
             xy = torch.cat([center_x, center_y], dim=1)
             
             # Sample radius uniformly from [0.05, self.radius]
-            evaluate = False
-            if evaluate:
+            if self.fix_radius:
                 radius = torch.full((b, 1), self.radius, device=self.device)
             else:
                 min_radius = 0.05

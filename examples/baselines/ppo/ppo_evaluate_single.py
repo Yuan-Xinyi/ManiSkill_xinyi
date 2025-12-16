@@ -45,6 +45,8 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     checkpoint: Optional[str] = None
     """path to a pretrained checkpoint file to start evaluation/training from"""
+    run_folder: Optional[str] = None
+    """path to the run folder containing checkpoints (e.g. runs/eg5_...)"""
 
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
@@ -177,13 +179,15 @@ if __name__ == "__main__":
     )
     logger = Logger(log_wandb=args.track, tensorboard=writer)
 
-    radii = np.arange(0.1, 0.8 + 0.001, 0.05)
-    all_results = {}
+    # Lengths from 0.10 to 1.00 with step 0.04
+    lengths = np.arange(0.10, 1.00 + 0.001, 0.04)
+    all_results = []
 
-    for radius in radii:
-        print(f"Evaluating with radius {radius:.2f}")
+    for length in lengths:
+        radius = length / 2.0
+        print(f"Evaluating with length {length:.2f} (radius {radius:.2f})")
         
-        video_folder = f"runs/{run_name}/videos/radius_{radius:.2f}"
+        video_folder = f"runs/{run_name}/videos/length_{length:.2f}"
         
         eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
         if isinstance(eval_envs.action_space, gym.spaces.Dict):
@@ -191,8 +195,9 @@ if __name__ == "__main__":
         
         eval_envs = ManiSkillVectorEnv(eval_envs, args.num_eval_envs, ignore_terminations=not args.eval_partial_reset, record_metrics=True)
         
-        # Set radius
+        # Set radius and fix it
         eval_envs.base_env.radius = radius
+        eval_envs.base_env.fix_radius = True
         
         print("Evaluating")
         agent.eval()
@@ -202,6 +207,7 @@ if __name__ == "__main__":
         initial_states = eval_envs.base_env.get_state().clone()
         
         tcp_history = []
+        touched_history = [] # Track if start was touched
         action_history = [] # Store actions for replay
         eval_metrics = defaultdict(list)
         num_episodes = 0
@@ -212,18 +218,25 @@ if __name__ == "__main__":
         start_pos = eval_envs.base_env.start_site.pose.p.clone()
         goal_pos = eval_envs.base_env.goal_site.pose.p.clone()
         
+        total_rewards = torch.zeros(args.num_eval_envs, device=device)
+
         for _ in range(args.num_eval_steps):
             with torch.no_grad():
                 action = agent.get_action(eval_obs, deterministic=True)
                 action_history.append(action.clone()) # Save action
                 eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(action)
                 
+                total_rewards += eval_rew.view(-1)
+
                 # Update success_once
                 current_success = eval_envs.base_env.evaluate()['success']
                 success_once |= current_success
                 
                 tcp_pos = eval_envs.base_env.agent.tcp.pose.p.clone()
                 tcp_history.append(tcp_pos)
+                
+                # Track touched start
+                touched_history.append(eval_envs.base_env.has_touched_start.clone())
 
                 if "final_info" in eval_infos:
                     mask = eval_infos["_final_info"]
@@ -231,37 +244,56 @@ if __name__ == "__main__":
                     for k, v in eval_infos["final_info"]["episode"].items():
                         eval_metrics[k].append(v)
         
-        # Calculate MSE
+        # Calculate MSE only for successful episodes
         tcp_history = torch.stack(tcp_history) # (T, N, 3)
+        touched_history = torch.stack(touched_history) # (T, N)
+        
         vec_sg = goal_pos - start_pos # (N, 3)
         len_sg_sq = (vec_sg ** 2).sum(dim=1) # (N,)
         mse_per_env = torch.zeros(args.num_eval_envs, device=device)
+        active_steps_per_env = torch.zeros(args.num_eval_envs, device=device)
         
         for t in range(args.num_eval_steps):
             p = tcp_history[t]
             vec_sp = p - start_pos
             proj_coef = (vec_sp * vec_sg).sum(dim=1) / (len_sg_sq + 1e-8)
+            # Clamp projection to be within the line segment [0, 1]
+            proj_coef = torch.clamp(proj_coef, 0.0, 1.0)
             closest_point = start_pos + vec_sg * proj_coef.unsqueeze(1)
             dist_sq = ((p - closest_point) ** 2).sum(dim=1)
-            mse_per_env += dist_sq
             
-        mse_per_env /= args.num_eval_steps
+            # Only accumulate MSE if start has been touched
+            mask = touched_history[t].float()
+            mse_per_env += dist_sq * mask
+            active_steps_per_env += mask
+            
+        # Divide by active steps
+        mse_per_env = mse_per_env / (active_steps_per_env + 1e-8)
         
         # Use success_once for sorting
         success_per_env = success_once
         
         print(f"Evaluated {args.num_eval_steps * args.num_eval_envs} steps")
-        radius_results = {}
-        for k, v in eval_metrics.items():
-            mean = torch.stack(v).float().mean().item()
-            radius_results[f"eval_{k}_mean"] = mean
-            logger.add_scalar(f"eval/{k}", mean, 0)
-            print(f"eval_{k}_mean={mean}")
         
-        radius_results["mse_mean"] = mse_per_env.mean().item()
-        print(f"MSE mean: {radius_results['mse_mean']}")
+        # Calculate metrics for the table
+        avg_success_rate = success_once.float().mean().item() * 100
+        avg_total_reward = total_rewards.mean().item()
         
-        all_results[f"radius_{radius:.2f}"] = radius_results
+        # Only calculate average MSE for successful environments
+        if success_once.sum() > 0:
+            avg_mse = mse_per_env[success_once].mean().item()
+        else:
+            avg_mse = float('nan') # Or 0.0, but nan is more accurate for "no data"
+
+        result_entry = {
+            "length": length,
+            "avg_success_rate": avg_success_rate,
+            "avg_total_reward": avg_total_reward,
+            "avg_mse": avg_mse
+        }
+        all_results.append(result_entry)
+        
+        print(f"Length: {length:.2f}, Success: {avg_success_rate:.2f}%, Reward: {avg_total_reward:.4f}, MSE: {avg_mse:.6f}")
 
         if args.capture_video:
             sort_keys = []
@@ -272,22 +304,16 @@ if __name__ == "__main__":
             
             sort_keys.sort()
             
-            print(f"Debug: Top 5 sort_keys: {sort_keys[:5]}")
-            
             # Filter: only take successful ones first
             successful_indices = [x for x in sort_keys if x[0] == -1]
-            print(f"Debug: Found {len(successful_indices)} successful environments.")
             
             if len(successful_indices) >= 8:
                 top_indices = [x[2] for x in successful_indices[:8]]
             else:
                 top_indices = [x[2] for x in successful_indices]
-                
                 if len(top_indices) == 0:
                      # Fallback: draw top 3 best failures to debug
                      top_indices = [x[2] for x in sort_keys[:3]]
-            
-            print(f"Top indices for radius {radius:.2f} (Success count: {len(successful_indices)}): {top_indices}")
             
             # Re-run top environments for video recording
             if len(top_indices) > 0:
@@ -309,6 +335,7 @@ if __name__ == "__main__":
                     rec_env = ManiSkillVectorEnv(rec_env, 1, ignore_terminations=not args.eval_partial_reset, record_metrics=True)
                     
                     rec_env.base_env.radius = radius
+                    rec_env.base_env.fix_radius = True
                     
                     # Reset and restore state
                     rec_env.reset(seed=current_seed)
@@ -335,9 +362,14 @@ if __name__ == "__main__":
         
         eval_envs.close()
 
-    os.makedirs(f"runs/{run_name}", exist_ok=True)
-    with open(f"runs/{run_name}/eval_metrics.json", "w") as f:
-        json.dump(all_results, f, indent=4)
-    print(f"Evaluation results saved to runs/{run_name}/eval_metrics.json")
+    # Save to JSONL
+    output_file = "evaluation_results.jsonl"
+    if args.run_folder:
+        output_file = os.path.join(args.run_folder, "evaluation_results.jsonl")
+    
+    with open(output_file, "w") as f:
+        for entry in all_results:
+            f.write(json.dumps(entry) + "\n")
+    print(f"Evaluation results saved to {output_file}")
 
     logger.close()
